@@ -4,6 +4,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/types.h>
@@ -126,6 +127,24 @@ static void test_inode_create(void)
 	EXPECT(old_count + 10 == new_count, "Wrong inode count. Expected %d, actual: %d\n", old_count + 10, new_count);
 }
 
+static void test_inode_read_write(void)
+{
+	struct inode_t in;
+	initialize_inode(&in);
+	uint32_t inode_num;
+	create_inode(fd, &fs, &in, &inode_num);
+	char outbuf[] = "Hello, world!";
+	uint64_t len = strlen(outbuf);
+	uint64_t byteswritten = inode_data_write(fd, &fs, inode_num, &in, (uint8_t *)outbuf, len, 0);
+	EXPECT(len == byteswritten, "Wrong bytes written. Expected %lu, got %lu\n", len, byteswritten);
+
+	char inbuf[len + 1];
+	uint64_t bytesread = inode_data_read(fd, &fs, inode_num, &in, (uint8_t *)inbuf, len, 0);
+	EXPECT(len == bytesread, "Wrong bytes read. Expected %lu, got %lu\n", len, bytesread);
+	inbuf[len] = '\0';
+	EXPECT(strcmp(inbuf, outbuf) == 0, "Wrong inode content. Expected %s, got %s\n", outbuf, inbuf);
+}
+
 int main(int argc, char **argv)
 {
 	if (argc != 2) {
@@ -149,6 +168,8 @@ int main(int argc, char **argv)
 	test_inode_state();
 
 	test_inode_create();
+
+	test_inode_read_write();
 
 	return 0;
 }

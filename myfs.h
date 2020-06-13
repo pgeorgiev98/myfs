@@ -81,5 +81,10 @@ void create_inode(int fd, struct fsinfo_t *fs, const struct inode_t *inode, uint
 
 uint8_t get_inode_state(int fd, struct fsinfo_t *fs, uint32_t inode);
 void set_inode_state(int fd, struct fsinfo_t *fs, uint32_t inode, uint8_t state);
+uint8_t get_block_state(int fd, struct fsinfo_t *fs, uint32_t block);
+void set_block_state(int fd, struct fsinfo_t *fs, uint32_t block, uint8_t state);
+
+uint64_t inode_data_write(int fd, struct fsinfo_t *fs, uint32_t inode_num, struct inode_t *inode, const uint8_t *buffer, uint64_t len, uint64_t pos);
+uint64_t inode_data_read(int fd, struct fsinfo_t *fs, uint32_t inode_num, struct inode_t *inode, uint8_t *buffer, uint64_t len, uint64_t pos);
 
 #endif

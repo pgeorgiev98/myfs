@@ -190,6 +190,31 @@ void create_inode(int fd, struct fsinfo_t *fs, const struct inode_t *inode, uint
 	*inode_num = i;
 }
 
+uint8_t get_block_state(int fd, struct fsinfo_t *fs, uint32_t block)
+{
+	uint64_t pos = fs->data_blocks_bitmap_pos;
+	pos += block / 8;
+	uint8_t data;
+	lseek(fd, pos, SEEK_SET);
+	read(fd, &data, 1);
+	return (data >> (block % 8)) & 1;
+}
+
+void set_block_state(int fd, struct fsinfo_t *fs, uint32_t block, uint8_t state)
+{
+	uint64_t pos = fs->data_blocks_bitmap_pos;
+	pos += block / 8;
+	uint8_t data;
+	lseek(fd, pos, SEEK_SET);
+	read(fd, &data, 1);
+	if (state)
+		data |= (1 << (block % 8));
+	else
+		data &= ~(1 << (block % 8));
+	lseek(fd, pos, SEEK_SET);
+	write(fd, &data, 1);
+}
+
 uint8_t get_inode_state(int fd, struct fsinfo_t *fs, uint32_t inode)
 {
 	uint64_t pos = fs->inode_bitmap_pos;
@@ -213,4 +238,80 @@ void set_inode_state(int fd, struct fsinfo_t *fs, uint32_t inode, uint8_t state)
 		data &= ~(1 << (inode % 8));
 	lseek(fd, pos, SEEK_SET);
 	write(fd, &data, 1);
+}
+
+uint64_t inode_data_write(int fd, struct fsinfo_t *fs, uint32_t inode_num, struct inode_t *inode, const uint8_t *buffer, uint64_t len, uint64_t pos)
+{
+	if (len == 0)
+		return 0;
+
+	const uint64_t bsize = fs->main_block.block_size;
+	const uint64_t block_count = fs->main_block.block_count - fs->main_block.reserved_block_count;
+
+	uint64_t old_size = inode->size;
+	uint64_t fsize = old_size + len;
+	if (fsize > bsize) {
+		// TODO: multiple blocks
+		exit(-1);
+	}
+
+	// Allocate the required blocks
+	uint64_t old_blocks = inode->blocks;
+	uint64_t new_blocks = fsize / bsize + (fsize % bsize != 0);
+	uint64_t alloc_bcnt = new_blocks - old_blocks;
+	for (uint64_t i = 0; i < block_count && alloc_bcnt > 0; ++i) {
+		if (!get_block_state(fd, fs, i)) {
+			// TODO: multiple blocks
+			inode->blockpos = i;
+			++alloc_bcnt;
+			break;
+		}
+	}
+	inode->blocks = new_blocks;
+
+	// Write the data
+	uint64_t towrite = len;
+	uint64_t written = 0;
+	while (towrite > 0) {
+		uint64_t b = towrite;
+		if (b > bsize - pos % bsize)
+			b = bsize - pos % bsize;
+		uint64_t bpos = fs->blocks_pos + inode->blockpos * bsize; // TODO: multiple blocks
+		lseek(fd, bpos, SEEK_SET);
+		uint64_t w = write(fd, buffer + written, b);
+		written += w;
+		towrite -= w;
+	}
+
+	return written;
+}
+
+uint64_t inode_data_read(int fd, struct fsinfo_t *fs, uint32_t inode_num, struct inode_t *inode, uint8_t *buffer, uint64_t len, uint64_t pos)
+{
+	if (len == 0)
+		return 0;
+
+	const uint64_t bsize = fs->main_block.block_size;
+
+	uint64_t fsize = inode->size;
+
+	// Read the data
+	uint64_t toread = len;
+	if (toread < fsize - pos)
+		toread = fsize - pos;
+	uint64_t readb = 0;
+	while (toread > 0) {
+		uint64_t b = toread;
+		if (b > bsize - pos % bsize)
+			b = bsize - pos % bsize;
+		uint64_t bpos = fs->blocks_pos + inode->blockpos * bsize; // TODO: multiple blocks
+		lseek(fd, bpos, SEEK_SET);
+		uint64_t r = read(fd, buffer + readb, b);
+		if (r == 0)
+			break;
+		readb += r;
+		toread -= r;
+	}
+
+	return readb;
 }
