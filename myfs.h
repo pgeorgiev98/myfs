@@ -75,8 +75,6 @@ void write_blank_data_bitmap(int fd, const struct fsinfo_t *fs);
 void write_blank_inode_bitmap(int fd, const struct fsinfo_t *fs);
 void write_blank_fs(int fd, struct fsinfo_t *fs);
 
-void write_root_directory(int fd, struct fsinfo_t *fs);
-
 void create_inode(int fd, struct fsinfo_t *fs, const struct inode_t *inode, uint32_t *inode_num);
 
 uint8_t get_inode_state(int fd, struct fsinfo_t *fs, uint32_t inode);
@@ -84,7 +82,13 @@ void set_inode_state(int fd, struct fsinfo_t *fs, uint32_t inode, uint8_t state)
 uint8_t get_block_state(int fd, struct fsinfo_t *fs, uint32_t block);
 void set_block_state(int fd, struct fsinfo_t *fs, uint32_t block, uint8_t state);
 
-uint64_t inode_data_write(int fd, struct fsinfo_t *fs, uint32_t inode_num, struct inode_t *inode, const uint8_t *buffer, uint64_t len, uint64_t pos);
-uint64_t inode_data_read(int fd, struct fsinfo_t *fs, uint32_t inode_num, struct inode_t *inode, uint8_t *buffer, uint64_t len, uint64_t pos);
+uint64_t inode_data_write(int fd, struct fsinfo_t *fs, struct inode_t *inode, const uint8_t *buffer, uint64_t len, uint64_t pos);
+uint64_t inode_data_read(int fd, struct fsinfo_t *fs, struct inode_t *inode, uint8_t *buffer, uint64_t len, uint64_t pos);
+
+void add_inode_to_dir(int fd, struct fsinfo_t *fs, uint32_t dir_inode_num, struct inode_t *dir_inode, uint32_t entry_inode_num, const char *entry_name);
+
+void write_root_directory(int fd, struct fsinfo_t *fs);
+
+int get_path_inode(int fd, struct fsinfo_t *fs, const char *path, uint32_t *inode_num, struct inode_t *inode);
 
 #endif

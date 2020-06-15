@@ -135,14 +135,45 @@ static void test_inode_read_write(void)
 	create_inode(fd, &fs, &in, &inode_num);
 	char outbuf[] = "Hello, world!";
 	uint64_t len = strlen(outbuf);
-	uint64_t byteswritten = inode_data_write(fd, &fs, inode_num, &in, (uint8_t *)outbuf, len, 0);
+	uint64_t byteswritten = inode_data_write(fd, &fs, &in, (uint8_t *)outbuf, len, 0);
+	write_inode(fd, &fs, inode_num, &in);
 	EXPECT(len == byteswritten, "Wrong bytes written. Expected %lu, got %lu\n", len, byteswritten);
 
 	char inbuf[len + 1];
-	uint64_t bytesread = inode_data_read(fd, &fs, inode_num, &in, (uint8_t *)inbuf, len, 0);
+	uint64_t bytesread = inode_data_read(fd, &fs, &in, (uint8_t *)inbuf, len, 0);
 	EXPECT(len == bytesread, "Wrong bytes read. Expected %lu, got %lu\n", len, bytesread);
 	inbuf[len] = '\0';
 	EXPECT(strcmp(inbuf, outbuf) == 0, "Wrong inode content. Expected %s, got %s\n", outbuf, inbuf);
+}
+
+static void test_get_path(void)
+{
+	write_blank_fs(fd, &fs);
+	struct inode_t root_inode;
+	read_inode(fd, &fs, 0, &root_inode);
+
+	for (int i = 1; i <= 10; ++i) {
+		struct inode_t inode;
+		initialize_inode(&inode);
+		uint32_t inode_num;
+		create_inode(fd, &fs, &inode, &inode_num);
+		EXPECT(inode_num == i, "Got unexpected inode number. Expected: %d, actual: %d\n", i, inode_num);
+	}
+	for (int i = 1; i <= 10; ++i) {
+		char name[64];
+		strcpy(name, "file-");
+		sprintf(name + 5, "%d", i);
+		add_inode_to_dir(fd, &fs, 0, &root_inode, i, name);
+	}
+	for (int i = 1; i <= 10; ++i) {
+		char path[64];
+		strcpy(path, "/file-");
+		sprintf(path + 6, "%d", i);
+		uint32_t inode_num;
+		struct inode_t inode;
+		EXPECT(get_path_inode(fd, &fs, path, &inode_num, &inode), "Failed to get inode for path %s\n", path);
+		EXPECT(inode_num == i, "Wrong inode number %d for %s\n", inode_num, path);
+	}
 }
 
 int main(int argc, char **argv)
@@ -170,6 +201,10 @@ int main(int argc, char **argv)
 	test_inode_create();
 
 	test_inode_read_write();
+
+	test_get_path();
+
+	close(fd);
 
 	return 0;
 }

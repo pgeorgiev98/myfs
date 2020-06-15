@@ -1,6 +1,8 @@
 #define _XOPEN_SOURCE 500
 
 #include "myfs.h"
+#include "asserts.h"
+
 #include "util.h"
 #include <stdlib.h>
 #include <unistd.h>
@@ -168,10 +170,7 @@ void write_blank_fs(int fd, struct fsinfo_t *fs)
 	write_main_block(fd, fs);
 	write_blank_inode_bitmap(fd, fs);
 	write_blank_data_bitmap(fd, fs);
-}
-
-void write_root_directory(int fd, struct fsinfo_t *fs)
-{
+	write_root_directory(fd, fs);
 }
 
 void create_inode(int fd, struct fsinfo_t *fs, const struct inode_t *inode, uint32_t *inode_num)
@@ -181,10 +180,8 @@ void create_inode(int fd, struct fsinfo_t *fs, const struct inode_t *inode, uint
 	for (i = 0; i < ic; ++i)
 		if (get_inode_state(fd, fs, i) == 0)
 			break;
-	if (i == ic) {
-		// TODO
-		exit(-1);
-	}
+	ASSERT_S(i != ic, "Failed to find free inode\n");
+
 	set_inode_state(fd, fs, i, 1);
 	write_inode(fd, fs, i, inode);
 	*inode_num = i;
@@ -240,7 +237,7 @@ void set_inode_state(int fd, struct fsinfo_t *fs, uint32_t inode, uint8_t state)
 	write(fd, &data, 1);
 }
 
-uint64_t inode_data_write(int fd, struct fsinfo_t *fs, uint32_t inode_num, struct inode_t *inode, const uint8_t *buffer, uint64_t len, uint64_t pos)
+uint64_t inode_data_write(int fd, struct fsinfo_t *fs, struct inode_t *inode, const uint8_t *buffer, uint64_t len, uint64_t pos)
 {
 	if (len == 0)
 		return 0;
@@ -249,11 +246,11 @@ uint64_t inode_data_write(int fd, struct fsinfo_t *fs, uint32_t inode_num, struc
 	const uint64_t block_count = fs->main_block.block_count - fs->main_block.reserved_block_count;
 
 	uint64_t old_size = inode->size;
-	uint64_t fsize = old_size + len;
-	if (fsize > bsize) {
-		// TODO: multiple blocks
-		exit(-1);
-	}
+	uint64_t fsize = old_size;
+	if (pos + len > fsize)
+		fsize = pos + len;
+
+	ASSERT_S(fsize <= bsize, "File too large\n");
 
 	// Allocate the required blocks
 	uint64_t old_blocks = inode->blocks;
@@ -262,6 +259,7 @@ uint64_t inode_data_write(int fd, struct fsinfo_t *fs, uint32_t inode_num, struc
 	for (uint64_t i = 0; i < block_count && alloc_bcnt > 0; ++i) {
 		if (!get_block_state(fd, fs, i)) {
 			// TODO: multiple blocks
+			set_block_state(fd, fs, i, 1);
 			inode->blockpos = i;
 			++alloc_bcnt;
 			break;
@@ -276,17 +274,20 @@ uint64_t inode_data_write(int fd, struct fsinfo_t *fs, uint32_t inode_num, struc
 		uint64_t b = towrite;
 		if (b > bsize - pos % bsize)
 			b = bsize - pos % bsize;
-		uint64_t bpos = fs->blocks_pos + inode->blockpos * bsize; // TODO: multiple blocks
+		uint64_t bpos = fs->blocks_pos + inode->blockpos * bsize + pos; // TODO: multiple blocks
 		lseek(fd, bpos, SEEK_SET);
 		uint64_t w = write(fd, buffer + written, b);
 		written += w;
 		towrite -= w;
 	}
 
+	inode->size += written;
+	inode->size = fsize;
+
 	return written;
 }
 
-uint64_t inode_data_read(int fd, struct fsinfo_t *fs, uint32_t inode_num, struct inode_t *inode, uint8_t *buffer, uint64_t len, uint64_t pos)
+uint64_t inode_data_read(int fd, struct fsinfo_t *fs, struct inode_t *inode, uint8_t *buffer, uint64_t len, uint64_t pos)
 {
 	if (len == 0)
 		return 0;
@@ -294,10 +295,12 @@ uint64_t inode_data_read(int fd, struct fsinfo_t *fs, uint32_t inode_num, struct
 	const uint64_t bsize = fs->main_block.block_size;
 
 	uint64_t fsize = inode->size;
+	if (pos >= fsize)
+		return 0;
 
 	// Read the data
 	uint64_t toread = len;
-	if (toread < fsize - pos)
+	if (toread > fsize - pos)
 		toread = fsize - pos;
 	uint64_t readb = 0;
 	while (toread > 0) {
@@ -314,4 +317,97 @@ uint64_t inode_data_read(int fd, struct fsinfo_t *fs, uint32_t inode_num, struct
 	}
 
 	return readb;
+}
+
+void add_inode_to_dir(int fd, struct fsinfo_t *fs, uint32_t dir_inode_num, struct inode_t *dir_inode, uint32_t entry_inode, const char *entry_name)
+{
+	uint64_t entries_count = 0;
+	if (dir_inode->size > 0) {
+		uint8_t header_buf[8];
+		inode_data_read(fd, fs, dir_inode, header_buf, sizeof(header_buf), 0);
+		util_read_u64(header_buf, &entries_count);
+	}
+
+	uint16_t name_len = strlen(entry_name);
+	uint8_t buffer[512 + 6]; // TODO
+	uint64_t buffer_len = 4 + 2 + name_len;
+	util_write_u32(buffer + 0x0, entry_inode);
+	util_write_u16(buffer + 0x4, name_len);
+	memcpy(buffer + 0x6, entry_name, name_len);
+
+	{
+		// Write the directory header
+		uint8_t header_buf[8];
+		util_write_u64(header_buf, entries_count + 1);
+		inode_data_write(fd, fs, dir_inode, header_buf, sizeof(header_buf), 0);
+	}
+
+	// Write the new entry to the directory
+	inode_data_write(fd, fs, dir_inode, buffer, buffer_len, dir_inode->size);
+
+	// Update the directory inode
+	write_inode(fd, fs, dir_inode_num, dir_inode);
+}
+
+void write_root_directory(int fd, struct fsinfo_t *fs)
+{
+	struct inode_t root_inode;
+	initialize_inode(&root_inode);
+	// TODO: Set file mode
+	set_inode_state(fd, fs, 0, 1);
+	write_inode(fd, fs, 0, &root_inode);
+}
+
+int get_path_inode(int fd, struct fsinfo_t *fs, const char *path, uint32_t *inode_num, struct inode_t *inode)
+{
+	if (path[0] != '/')
+		return 0;
+
+	uint32_t cur_inode_num = 0;
+	struct inode_t cur_inode;
+	read_inode(fd, fs, cur_inode_num, &cur_inode);
+
+	// Parse `path`
+	int fname_begin = 1;
+	for (int fname_end = 1; ; ++fname_end) {
+		char c = path[fname_end];
+		if (c == '\0' || c == '/') {
+			// Search for a file named `path[fname_begin:fname_end]` in the current inode
+			uint8_t buffer[fs->main_block.block_size];
+			uint64_t s = inode_data_read(fd, fs, &cur_inode, buffer, sizeof(buffer), 0);
+			if (s == 0)
+				return 0;
+			uint64_t pos = 8;
+			uint64_t inodes_count;
+			util_read_u64(buffer, &inodes_count);
+			int inode_found = 0;
+
+			for (uint64_t i = 0; i < inodes_count; ++i) {
+				uint16_t name_len;
+				ASSERT(pos + 6 <= s);
+				util_read_u32(buffer + pos, &cur_inode_num);
+				util_read_u16(buffer + pos + 4, &name_len);
+				ASSERT(pos + 6 + name_len <= s);
+				if (name_len == fname_end - fname_begin &&
+						strncmp((const char *)(buffer + pos + 6), path + fname_begin, name_len) == 0) {
+					read_inode(fd, fs, cur_inode_num, &cur_inode);
+					inode_found = 1;
+					break;
+				}
+				pos += 6 + name_len;
+			}
+
+			if (!inode_found)
+				return 0;
+
+			fname_begin = fname_end + 1;
+
+			if (c == '\0')
+				break;
+		}
+	}
+
+	*inode_num = cur_inode_num;
+	*inode = cur_inode;
+	return 1;
 }
