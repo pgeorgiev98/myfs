@@ -140,6 +140,19 @@ static int myfs_read(const char *path, char *buf, size_t size, off_t offset,
 	return inode_data_read(fd, &fs, &inode, (uint8_t *)buf, size, offset);
 }
 
+static int myfs_write(const char *path, const char *buf, size_t size, off_t offset,
+		struct fuse_file_info *fi)
+{
+	uint32_t inode_num;
+	struct inode_t inode;
+	if (!get_path_inode(fd, &fs, path, &inode_num, &inode))
+		return -ENOENT;
+
+	uint64_t bytes_written = inode_data_write(fd, &fs, &inode, (uint8_t *)buf, size, offset);
+	write_inode(fd, &fs, inode_num, &inode);
+	return bytes_written;
+}
+
 static int myfs_mknod(const char *path, mode_t mode, dev_t dev)
 {
 	int len = strlen(path);
@@ -233,6 +246,7 @@ static const struct fuse_operations myfs_oper = {
 	.readdir    = myfs_readdir,
 	.open       = myfs_open,
 	.read       = myfs_read,
+	.write      = myfs_write,
 	.mknod      = myfs_mknod,
 	.mkdir      = myfs_mkdir,
 };
