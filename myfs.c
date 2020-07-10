@@ -180,7 +180,7 @@ void create_inode(int fd, struct fsinfo_t *fs, const struct inode_t *inode, uint
 	for (i = 0; i < ic; ++i)
 		if (get_inode_state(fd, fs, i) == 0)
 			break;
-	ASSERT_S(i != ic, "Failed to find free inode\n");
+	EXPECT_S(i != ic, "Failed to find free inode\n"); // TODO
 
 	set_inode_state(fd, fs, i, 1);
 	write_inode(fd, fs, i, inode);
@@ -250,7 +250,7 @@ uint64_t inode_data_write(int fd, struct fsinfo_t *fs, struct inode_t *inode, co
 	if (pos + len > fsize)
 		fsize = pos + len;
 
-	ASSERT_S(fsize <= bsize, "File too large\n");
+	EXPECT_S(fsize <= bsize, "File too large\n");
 
 	// Allocate the required blocks
 	uint64_t old_blocks = inode->blocks;
@@ -363,6 +363,12 @@ int get_path_inode(int fd, struct fsinfo_t *fs, const char *path, uint32_t *inod
 	if (path[0] != '/')
 		return 0;
 
+	if (!strcmp(path, "/")) {
+		*inode_num = 0;
+		read_inode(fd, fs, 0, inode);
+		return 1;
+	}
+
 	uint32_t cur_inode_num = 0;
 	struct inode_t cur_inode;
 	read_inode(fd, fs, cur_inode_num, &cur_inode);
@@ -384,10 +390,10 @@ int get_path_inode(int fd, struct fsinfo_t *fs, const char *path, uint32_t *inod
 
 			for (uint64_t i = 0; i < inodes_count; ++i) {
 				uint16_t name_len;
-				ASSERT(pos + 6 <= s);
+				EXPECT(pos + 6 <= s);
 				util_read_u32(buffer + pos, &cur_inode_num);
 				util_read_u16(buffer + pos + 4, &name_len);
-				ASSERT(pos + 6 + name_len <= s);
+				EXPECT(pos + 6 + name_len <= s);
 				if (name_len == fname_end - fname_begin &&
 						strncmp((const char *)(buffer + pos + 6), path + fname_begin, name_len) == 0) {
 					read_inode(fd, fs, cur_inode_num, &cur_inode);

@@ -26,8 +26,10 @@
 #define INODE_SIZE 50
 
 enum {
-	ftype_dir = 0,
-	ftype_file = 1,
+	mode_mask       = 0777,
+	mode_ftype_mask = 1 << 9,
+	mode_ftype_dir  = 0 << 9,
+	mode_ftype_file = 1 << 9,
 };
 
 struct main_block_t

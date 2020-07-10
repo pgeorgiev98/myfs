@@ -1,6 +1,7 @@
 #define _XOPEN_SOURCE 500
 
 #include "myfs.h"
+#include "asserts.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,7 +11,6 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
-#define EXPECT(what, name...) if (!(what)) printf("FAILED: " name);
 #define CMP_STRUCT(a, b) memcmp2(&a, &b, sizeof(a))
 
 static uint8_t memcmp2(const void *a, const void *b, uint32_t len)
@@ -62,15 +62,15 @@ static void test_inode_state()
 {
 	for (int i = 0; i < 10; ++i) {
 		set_inode_state(fd, &fs, i, 0);
-		EXPECT(get_inode_state(fd, &fs, i) == 0, "Inode state X to 0");
+		EXPECT_EQUAL(get_inode_state(fd, &fs, i), 0);
 		set_inode_state(fd, &fs, i, 0);
-		EXPECT(get_inode_state(fd, &fs, i) == 0, "Inode state 0 to 0");
+		EXPECT_EQUAL(get_inode_state(fd, &fs, i), 0);
 		set_inode_state(fd, &fs, i, 1);
-		EXPECT(get_inode_state(fd, &fs, i) == 1, "Inode state 0 to 1");
+		EXPECT_EQUAL(get_inode_state(fd, &fs, i), 1);
 		set_inode_state(fd, &fs, i, 1);
-		EXPECT(get_inode_state(fd, &fs, i) == 1, "Inode state 1 to 1");
+		EXPECT_EQUAL(get_inode_state(fd, &fs, i), 1);
 		set_inode_state(fd, &fs, i, 0);
-		EXPECT(get_inode_state(fd, &fs, i) == 0, "Inode state 1 to 0");
+		EXPECT_EQUAL(get_inode_state(fd, &fs, i), 0);
 	}
 
 	int inodes[] = { 0,  5,  2,  7,  3, 30, 29, 31,  2, 30,  0, 16, 19, 30};
@@ -84,7 +84,7 @@ static void test_inode_state()
 		s[inodes[i]] = states[i];
 	}
 	for (int i = 0; i < fs.main_block.inode_count_limit; ++i)
-		EXPECT(get_inode_state(fd, &fs, i) == s[i], "Verify inode state %d\n", i);
+		EXPECT_S(get_inode_state(fd, &fs, i) == s[i], "Inode %d was at wrong state", i);
 }
 
 static uint32_t count_inodes(void)
@@ -115,16 +115,16 @@ static void test_inode_create(void)
 		inodes[i] = in;
 		uint32_t inode_num;
 		create_inode(fd, &fs, &in, &inode_num);
-		EXPECT(inode_num < ic, "create_inode() returned illegal inode number %d\n", inode_num);
+		EXPECT_S(inode_num < ic, "create_inode() returned illegal inode number %d", inode_num);
 		numbers[i] = inode_num;
 	}
 	for (int i = 0; i < 10; ++i) {
 		struct inode_t in;
 		read_inode(fd, &fs, numbers[i], &in);
-		EXPECT(CMP_STRUCT(in, inodes[i]), "Inodes are different\n");
+		EXPECT_S(CMP_STRUCT(in, inodes[i]), "Inodes are different");
 	}
 	uint32_t new_count = count_inodes();
-	EXPECT(old_count + 10 == new_count, "Wrong inode count. Expected %d, actual: %d\n", old_count + 10, new_count);
+	EXPECT_EQUAL(old_count + 10, new_count);
 }
 
 static void test_inode_read_write(void)
@@ -133,17 +133,17 @@ static void test_inode_read_write(void)
 	initialize_inode(&in);
 	uint32_t inode_num;
 	create_inode(fd, &fs, &in, &inode_num);
-	char outbuf[] = "Hello, world!";
+	const char outbuf[] = "Hello, world!";
 	uint64_t len = strlen(outbuf);
 	uint64_t byteswritten = inode_data_write(fd, &fs, &in, (uint8_t *)outbuf, len, 0);
 	write_inode(fd, &fs, inode_num, &in);
-	EXPECT(len == byteswritten, "Wrong bytes written. Expected %lu, got %lu\n", len, byteswritten);
+	EXPECT_EQUAL(len, byteswritten);
 
 	char inbuf[len + 1];
 	uint64_t bytesread = inode_data_read(fd, &fs, &in, (uint8_t *)inbuf, len, 0);
-	EXPECT(len == bytesread, "Wrong bytes read. Expected %lu, got %lu\n", len, bytesread);
+	EXPECT_EQUAL(len, bytesread);
 	inbuf[len] = '\0';
-	EXPECT(strcmp(inbuf, outbuf) == 0, "Wrong inode content. Expected %s, got %s\n", outbuf, inbuf);
+	EXPECT_S(strcmp(inbuf, outbuf) == 0, "Wrong inode content. Expected %s, got %s", outbuf, inbuf);
 }
 
 static void test_get_path(void)
@@ -157,7 +157,7 @@ static void test_get_path(void)
 		initialize_inode(&inode);
 		uint32_t inode_num;
 		create_inode(fd, &fs, &inode, &inode_num);
-		EXPECT(inode_num == i, "Got unexpected inode number. Expected: %d, actual: %d\n", i, inode_num);
+		EXPECT_EQUAL(inode_num, i);
 	}
 	for (int i = 1; i <= 10; ++i) {
 		char name[64];
@@ -171,19 +171,23 @@ static void test_get_path(void)
 		sprintf(path + 6, "%d", i);
 		uint32_t inode_num;
 		struct inode_t inode;
-		EXPECT(get_path_inode(fd, &fs, path, &inode_num, &inode), "Failed to get inode for path %s\n", path);
-		EXPECT(inode_num == i, "Wrong inode number %d for %s\n", inode_num, path);
+		EXPECT_S(get_path_inode(fd, &fs, path, &inode_num, &inode), "Failed to get inode for path %s", path);
+		EXPECT_S(inode_num == i, "Wrong inode number for %s, expected %d, actual %d", path, i, inode_num);
+		inode_data_write(fd, &fs, &inode, (const uint8_t *)path, strlen(path), 0);
+		write_inode(fd, &fs, inode_num, &inode);
 	}
 }
 
 int main(int argc, char **argv)
 {
-	if (argc != 2) {
-		return 1;
+	if (argc != 2 || !strcmp(argv[1], "--help") || !strcmp(argv[1], "-h")) {
+		printf("Usage: %s test_file_name\n", argv[0]);
+		return argc != 2;
 	}
 
 	path = argv[1];
 
+	printf("Creating filesystem\n");
 	create_fs(1024*1024);
 
 	fd = open(argv[1], O_RDWR);
@@ -196,12 +200,16 @@ int main(int argc, char **argv)
 
 	print_fs_info();
 
+	printf("Test inode states\n");
 	test_inode_state();
 
+	printf("Test inode creation\n");
 	test_inode_create();
 
+	printf("Test inode read/write\n");
 	test_inode_read_write();
 
+	printf("Test get_path_inode()\n");
 	test_get_path();
 
 	close(fd);

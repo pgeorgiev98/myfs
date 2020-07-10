@@ -1,4 +1,7 @@
 project('myfs', 'c', default_options : ['c_std=c11'])
+if get_option('buildtype').startswith('debug')
+  add_project_arguments('-DDEBUG', language : 'c')
+endif
 
 fusedep = dependency('fuse3')
 

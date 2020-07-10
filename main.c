@@ -2,8 +2,13 @@
 
 #define _XOPEN_SOURCE 500
 
+#include "myfs.h"
+#include "util.h"
+#include "asserts.h"
+
 #include <fuse.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -13,12 +18,8 @@
 
 static FILE *log = NULL;
 
-struct file
-{
-	char name[256];
-};
-static struct file files[100];
-static int files_count = 0;
+static struct fsinfo_t fs;
+static int fd = -1;
 
 /*
  * Command line options
@@ -41,14 +42,21 @@ static const struct fuse_opt option_spec[] = {
 	FUSE_OPT_END
 };
 
-static void *hello_init(struct fuse_conn_info *conn,
+static void *myfs_init(struct fuse_conn_info *conn,
 		struct fuse_config *cfg)
 {
-	printf("Init\n");
+	fd = open(options.devpath, O_RDWR);
+	if (fd == -1) {
+		perror("Failed to open device");
+		exit(1);
+	}
+
+	read_fsinfo(fd, &fs);
+
 	return NULL;
 }
 
-static int hello_getattr(const char *path, struct stat *stbuf,
+static int myfs_getattr(const char *path, struct stat *stbuf,
 			 struct fuse_file_info *fi)
 {
 	memset(stbuf, 0, sizeof(struct stat));
@@ -58,85 +66,175 @@ static int hello_getattr(const char *path, struct stat *stbuf,
 		return 0;
 	}
 
-	for (int i = 0; i < files_count; ++i) {
-		if (!strcmp(path + 1, files[i].name)) {
-			stbuf->st_mode = S_IFREG | 0444;
-			stbuf->st_nlink = 1;
-			stbuf->st_size = 0;
-			return 0;
-		}
+	uint32_t inode_num;
+	struct inode_t inode;
+	if (get_path_inode(fd, &fs, path, &inode_num, &inode)) {
+		mode_t mode = (inode.mode & mode_mask);
+		if ((inode.mode & mode_ftype_mask) == mode_ftype_dir)
+			mode |= S_IFDIR;
+		else //if (inode.mode & mode_ftype_mask == mode_ftype_file)
+			mode |= S_IFREG;
+		stbuf->st_mode = mode;
+		stbuf->st_nlink = 1; // TODO
+		stbuf->st_size = inode.size;
+		return 0;
 	}
 
 	return -ENOENT;
 }
 
-static int hello_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
+static int myfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 			 off_t offset, struct fuse_file_info *fi,
 			 enum fuse_readdir_flags flags)
 {
-	if (strcmp(path, "/"))
-		return -ENOENT;
-
 	filler(buf, ".", NULL, 0, 0);
 	filler(buf, "..", NULL, 0, 0);
-	for (int i = 0; i < files_count; ++i) {
-		filler(buf, files[i].name, NULL, 0, 0);
-	}
 
-	return 0;
-}
-
-static int hello_open(const char *path, struct fuse_file_info *fi)
-{
-	for (int i = 0; i < files_count; ++i) {
-		if (!strcmp(path + 1, files[i].name)) {
-			if ((fi->flags & O_ACCMODE) != O_RDONLY)
-				return -EACCES;
-			return 0;
-		}
-	}
-
-	return -ENOENT;
-}
-
-static int hello_read(const char *path, char *buf, size_t size, off_t offset,
-		      struct fuse_file_info *fi)
-{
-	printf("Read\n");
-
-	int f = -1;
-	for (int i = 0; i < files_count; ++i) {
-		if (!strcmp(path + 1, files[i].name)) {
-			f = i;
-			break;
-		}
-	}
-	if (f == -1)
+	uint32_t cur_inode_num;
+	struct inode_t cur_inode;
+	if (!get_path_inode(fd, &fs, path, &cur_inode_num, &cur_inode))
 		return -ENOENT;
 
-	size = 0;
-	return size;
-}
+	uint8_t buffer[fs.main_block.block_size];
+	uint64_t s = inode_data_read(fd, &fs, &cur_inode, buffer, sizeof(buffer), 0);
+	if (s == 0)
+		return 0;
 
-static int hello_mknod(const char *path, mode_t mode, dev_t dev)
-{
-	for (int i = 0; i < files_count; ++i)
-		if (!strcmp(path + 1, files[i].name))
-			return -EEXIST;
+	uint64_t pos = 8;
+	uint64_t inodes_count;
+	util_read_u64(buffer, &inodes_count);
 
-	int f = files_count++;
-	strcpy(files[f].name, path + 1);
+	for (uint64_t i = 0; i < inodes_count; ++i) {
+		uint16_t name_len;
+		EXPECT(pos + 6 <= s);
+		util_read_u16(buffer + pos + 4, &name_len);
+		EXPECT(pos + 6 + name_len <= s);
+		char name[513];
+		memcpy(name, buffer + pos + 6, name_len);
+		name[name_len] = '\0';
+		filler(buf, name, NULL, 0, 0);
+		pos += 6 + name_len;
+	}
 
 	return 0;
 }
 
-static const struct fuse_operations hello_oper = {
-	.init       = hello_init,
-	.getattr    = hello_getattr,
-	.readdir    = hello_readdir,
-	.open       = hello_open,
-	.read       = hello_read,
-	.mknod      = hello_mknod,
+static int myfs_open(const char *path, struct fuse_file_info *fi)
+{
+	uint32_t inode_num;
+	struct inode_t inode;
+	if (!get_path_inode(fd, &fs, path, &inode_num, &inode))
+		return -ENOENT;
+
+	return 0;
+}
+
+static int myfs_read(const char *path, char *buf, size_t size, off_t offset,
+		      struct fuse_file_info *fi)
+{
+	uint32_t inode_num;
+	struct inode_t inode;
+	if (!get_path_inode(fd, &fs, path, &inode_num, &inode))
+		return -ENOENT;
+
+	return inode_data_read(fd, &fs, &inode, (uint8_t *)buf, size, offset);
+}
+
+static int myfs_mknod(const char *path, mode_t mode, dev_t dev)
+{
+	int len = strlen(path);
+	int i;
+	for (i = len - 1; i >= 0; --i)
+		if (path[i] == '/')
+			break;
+	char filename[len - i];
+	strncpy(filename, path + i + 1, len - i - 1);
+	filename[len - i - 1] = '\0';
+
+	uint32_t parent_inode_num;
+	struct inode_t parent_inode;
+	if (i != 0) {
+		char parent_path[i + 1];
+		strncpy(parent_path, path, i);
+		parent_path[i] = '\0';
+		if (!get_path_inode(fd, &fs, parent_path, &parent_inode_num, &parent_inode)) {
+			return -ENOENT;
+		}
+		if ((parent_inode.mode & mode_ftype_mask) != mode_ftype_dir)
+			return -ENOTDIR;
+	} else {
+		parent_inode_num = 0;
+		read_inode(fd, &fs, 0, &parent_inode);
+	}
+
+	struct inode_t inode = {
+		.ctime = 0,
+		.mtime = 0,
+		.size = 0,
+		.blocks = 0,
+		.uid = 0,
+		.gid = 0,
+		.mode = 0644 | mode_ftype_file,
+	};
+	uint32_t inode_num;
+	create_inode(fd, &fs, &inode, &inode_num);
+	add_inode_to_dir(fd, &fs, parent_inode_num, &parent_inode, inode_num, filename);
+
+	return 0;
+}
+
+static int myfs_mkdir(const char *path, mode_t mode)
+{
+	int len = strlen(path);
+	int i;
+	for (i = len - 1; i >= 0; --i)
+		if (path[i] == '/')
+			break;
+	char filename[len - i];
+	strncpy(filename, path + i + 1, len - i - 1);
+	filename[len - i - 1] = '\0';
+	printf("mkdir with path '%s' filename '%s' %d\n", path, filename, len - i);
+
+	uint32_t parent_inode_num;
+	struct inode_t parent_inode;
+	if (i != 0) {
+		char parent_path[i + 1];
+		strncpy(parent_path, path, i);
+		parent_path[i] = '\0';
+		if (!get_path_inode(fd, &fs, parent_path, &parent_inode_num, &parent_inode)) {
+			return -ENOENT;
+		}
+		if ((parent_inode.mode & mode_ftype_mask) != mode_ftype_dir)
+			return -ENOTDIR;
+	} else {
+		parent_inode_num = 0;
+		read_inode(fd, &fs, 0, &parent_inode);
+	}
+
+	struct inode_t inode = {
+		.ctime = 0,
+		.mtime = 0,
+		.size = 0,
+		.blocks = 0,
+		.uid = 0,
+		.gid = 0,
+		.mode = 0755 | mode_ftype_dir,
+	};
+	uint32_t inode_num;
+	create_inode(fd, &fs, &inode, &inode_num);
+	add_inode_to_dir(fd, &fs, parent_inode_num, &parent_inode, inode_num, filename);
+
+	return 0;
+}
+
+static const struct fuse_operations myfs_oper = {
+	.init       = myfs_init,
+	.getattr    = myfs_getattr,
+	.readdir    = myfs_readdir,
+	.open       = myfs_open,
+	.read       = myfs_read,
+	.mknod      = myfs_mknod,
+	.mkdir      = myfs_mkdir,
 };
 
 int main(int argc, char *argv[])
@@ -163,14 +261,12 @@ int main(int argc, char *argv[])
 	if (options.show_help) {
 		assert(fuse_opt_add_arg(&args, "--help") == 0);
 		args.argv[0][0] = '\0';
-	}
-
-	if (options.devpath == NULL) {
+	} else if (options.devpath == NULL) {
 		fprintf(stderr, "Device path expected\n");
 		return 1;
 	}
 
-	ret = fuse_main(args.argc, args.argv, &hello_oper, NULL);
+	ret = fuse_main(args.argc, args.argv, &myfs_oper, NULL);
 	fuse_opt_free_args(&args);
 	fclose(log);
 	return ret;
