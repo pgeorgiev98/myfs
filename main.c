@@ -206,7 +206,6 @@ static int myfs_mkdir(const char *path, mode_t mode)
 	char filename[len - i];
 	strncpy(filename, path + i + 1, len - i - 1);
 	filename[len - i - 1] = '\0';
-	printf("mkdir with path '%s' filename '%s' %d\n", path, filename, len - i);
 
 	uint32_t parent_inode_num;
 	struct inode_t parent_inode;
