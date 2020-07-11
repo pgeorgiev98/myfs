@@ -24,6 +24,7 @@ static uint8_t memcmp2(const void *a, const void *b, uint32_t len)
 static int fd = -1;
 static const char *path = NULL;
 static struct fsinfo_t fs;
+static uint64_t file_size = 0;
 
 static void create_fs(uint64_t size)
 {
@@ -38,23 +39,28 @@ static void create_fs(uint64_t size)
 	write_blank_fs(fd, &fs);
 
 	close(fd);
+
+	file_size = size;
 }
 
 static void print_fs_info(void)
 {
+	uint64_t wasted_bytes = file_size - fs.main_block.data_block_count * fs.main_block.block_size;
 	printf(
 			"Max number of inodes:      %u\n"
 			"Number of inodes:          %u\n"
 			"Total number of blocks:    %lu\n"
+			"Number of usable blocks:   %lu\n"
 			"Number of free blocks:     %lu\n"
-			"Number of reserved blocks: %lu\n"
 			"Block size:                %hu\n"
+			"Reserved space:            %.2f%%\n"
 			, fs.main_block.inode_count_limit
 			, fs.main_block.inode_count
 			, fs.main_block.block_count
-			, fs.main_block.free_block_count
-			, fs.main_block.reserved_block_count
+			, fs.main_block.data_block_count
+			, fs.main_block.free_data_block_count
 			, fs.main_block.block_size
+			, (100.0f * wasted_bytes) / file_size
 		  );
 }
 

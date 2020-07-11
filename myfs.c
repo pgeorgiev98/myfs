@@ -8,31 +8,54 @@
 #include <unistd.h>
 #include <string.h>
 
+// ceil(A/B)
+#define CEIL_DIV(A, B) ((A)/(B) + ((A)%(B) != 0))
+
 void initialize_fsinfo(struct fsinfo_t *fs, uint64_t size)
 {
 	const uint16_t block_size = 4096;
 	const uint64_t block_count = size / block_size;
-	const uint32_t inode_count = block_count / 4;
-	const uint32_t inode_bitmap_blocks = inode_count / block_size
-		+ (inode_count % block_size != 0);
-	const uint64_t reserved_block_count = 1 + inode_bitmap_blocks;
-	const uint64_t usable_data_blocks = block_count - reserved_block_count;
+	const uint64_t block_count_2 = block_count - 2; // Reserve space for 2 main blocks
+
+	// Reserve space for the inode map and inode blocks
+	const uint32_t inode_count = size / 4096;
+	const uint32_t inode_map_block_count = CEIL_DIV(inode_count, 8 * block_size);
+	const uint32_t inodes_block_count = CEIL_DIV(inode_count * INODE_SIZE, block_size);
+	const uint64_t block_count_3 = block_count_2 - inode_map_block_count - inodes_block_count;
+
+	// Reserve space for the data blocks and data block map
+	const uint64_t data_block_count = (block_count_3 * 32) / 33;
 
 	struct main_block_t mb = {
 		.inode_count_limit = inode_count,
 		.inode_count = 0,
 		.block_count = block_count,
-		.free_block_count = block_count - reserved_block_count,
-		.reserved_block_count = reserved_block_count,
+		.data_block_count = data_block_count,
+		.free_data_block_count = data_block_count,
 		.block_size = block_size,
 	};
 
-	fs->main_block = mb;
+	initialize_fsinfo_from_main_block(fs, &mb);
+}
+
+void initialize_fsinfo_from_main_block(struct fsinfo_t *fs, const struct main_block_t *mb)
+{
+	const uint16_t bs = mb->block_size;
+
+	const uint64_t inode_bitmap_blocks = CEIL_DIV(mb->inode_count_limit, (8 * bs));
+	const uint64_t data_bitmap_blocks = CEIL_DIV(mb->data_block_count, (8 * bs));
+
+	const uint64_t inode_bitmap_pos = MAIN_BLOCK_SIZE;
+	const uint64_t data_blocks_bitmap_pos = inode_bitmap_pos + inode_bitmap_blocks * bs;
+	const uint64_t inodes_pos = data_blocks_bitmap_pos + data_bitmap_blocks * bs;
+	const uint64_t blocks_pos = inodes_pos + mb->inode_count_limit * bs;
+
+	fs->main_block = *mb;
 	fs->inode_bitmap_blocks = inode_bitmap_blocks;
-	fs->inode_bitmap_pos = MAIN_BLOCK_SIZE;
-	fs->data_blocks_bitmap_pos = fs->inode_bitmap_pos + fs->inode_bitmap_blocks * block_size;
-	fs->inodes_pos = fs->data_blocks_bitmap_pos + usable_data_blocks * block_size;
-	fs->blocks_pos = fs->inodes_pos + inode_count * INODE_SIZE;
+	fs->inode_bitmap_pos = inode_bitmap_pos;
+	fs->data_blocks_bitmap_pos = data_blocks_bitmap_pos;
+	fs->inodes_pos = inodes_pos;
+	fs->blocks_pos = blocks_pos;
 }
 
 void initialize_inode(struct inode_t *inode)
@@ -57,8 +80,8 @@ void write_main_block(int fd, const struct fsinfo_t *fs)
 	util_writeseq_u32(&b, fs->main_block.inode_count_limit);
 	util_writeseq_u32(&b, fs->main_block.inode_count);
 	util_writeseq_u64(&b, fs->main_block.block_count);
-	util_writeseq_u64(&b, fs->main_block.free_block_count);
-	util_writeseq_u64(&b, fs->main_block.reserved_block_count);
+	util_writeseq_u64(&b, fs->main_block.data_block_count);
+	util_writeseq_u64(&b, fs->main_block.free_data_block_count);
 	util_writeseq_u16(&b, fs->main_block.block_size);
 
 	// TODO: error checking
@@ -93,25 +116,16 @@ void read_fsinfo(int fd, struct fsinfo_t *fs)
 	lseek(fd, 0, SEEK_SET);
 	read(fd, buffer, sizeof(buffer));
 
+	struct main_block_t mb;
 	uint8_t *b = buffer;
-	util_readseq_u32(&b, &fs->main_block.inode_count_limit);
-	util_readseq_u32(&b, &fs->main_block.inode_count);
-	util_readseq_u64(&b, &fs->main_block.block_count);
-	util_readseq_u64(&b, &fs->main_block.free_block_count);
-	util_readseq_u64(&b, &fs->main_block.reserved_block_count);
-	util_readseq_u16(&b, &fs->main_block.block_size);
+	util_readseq_u32(&b, &mb.inode_count_limit);
+	util_readseq_u32(&b, &mb.inode_count);
+	util_readseq_u64(&b, &mb.block_count);
+	util_readseq_u64(&b, &mb.data_block_count);
+	util_readseq_u64(&b, &mb.free_data_block_count);
+	util_readseq_u16(&b, &mb.block_size);
 
-	const uint64_t usable_data_blocks = fs->main_block.block_count -
-		fs->main_block.reserved_block_count;
-
-	fs->inode_bitmap_blocks = fs->main_block.inode_count_limit / fs->main_block.block_size +
-		(fs->main_block.inode_count_limit % fs->main_block.block_size != 0);
-	fs->inode_bitmap_pos = MAIN_BLOCK_SIZE;
-	fs->data_blocks_bitmap_pos = fs->inode_bitmap_pos +
-		fs->inode_bitmap_blocks * fs->main_block.block_size;
-	fs->inodes_pos = fs->data_blocks_bitmap_pos +
-		usable_data_blocks * fs->main_block.block_size;
-	fs->blocks_pos = fs->inodes_pos + fs->main_block.inode_count_limit * INODE_SIZE;
+	initialize_fsinfo_from_main_block(fs, &mb);
 }
 
 void read_inode(int fd, const struct fsinfo_t *fs, uint32_t inode_num, struct inode_t *inode)
@@ -243,7 +257,7 @@ uint64_t inode_data_write(int fd, struct fsinfo_t *fs, struct inode_t *inode, co
 		return 0;
 
 	const uint64_t bsize = fs->main_block.block_size;
-	const uint64_t block_count = fs->main_block.block_count - fs->main_block.reserved_block_count;
+	const uint64_t block_count = fs->main_block.data_block_count;
 
 	uint64_t old_size = inode->size;
 	uint64_t fsize = old_size;

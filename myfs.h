@@ -37,8 +37,8 @@ struct main_block_t
 	uint32_t inode_count_limit;
 	uint32_t inode_count;
 	uint64_t block_count;
-	uint64_t free_block_count;
-	uint64_t reserved_block_count;
+	uint64_t data_block_count;
+	uint64_t free_data_block_count;
 	uint16_t block_size;
 };
 
@@ -65,6 +65,7 @@ struct inode_t
 };
 
 void initialize_fsinfo(struct fsinfo_t *fs, uint64_t size);
+void initialize_fsinfo_from_main_block(struct fsinfo_t *fs, const struct main_block_t *mb);
 void initialize_inode(struct inode_t *inode);
 
 void write_main_block(int fd, const struct fsinfo_t *fs);

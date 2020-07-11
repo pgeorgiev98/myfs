@@ -32,8 +32,8 @@ int main(int argc, char **argv)
 			, fs.main_block.inode_count_limit
 			, fs.main_block.inode_count
 			, fs.main_block.block_count
-			, fs.main_block.free_block_count
-			, fs.main_block.reserved_block_count
+			, fs.main_block.data_block_count
+			, fs.main_block.free_data_block_count
 			, fs.main_block.block_size
 		  );
 
