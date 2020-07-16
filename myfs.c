@@ -14,17 +14,17 @@
 void initialize_fsinfo(struct fsinfo_t *fs, uint64_t size)
 {
 	const uint16_t block_size = 4096;
-	const uint64_t block_count = size / block_size;
-	const uint64_t block_count_2 = block_count - 2; // Reserve space for 2 main blocks
+	const uint32_t block_count = size / block_size;
+	const uint32_t block_count_2 = block_count - 2; // Reserve space for 2 main blocks
 
 	// Reserve space for the inode map and inode blocks
 	const uint32_t inode_count = size / 4096;
 	const uint32_t inode_map_block_count = CEIL_DIV(inode_count, 8 * block_size);
 	const uint32_t inodes_block_count = CEIL_DIV(inode_count * INODE_SIZE, block_size);
-	const uint64_t block_count_3 = block_count_2 - inode_map_block_count - inodes_block_count;
+	const uint32_t block_count_3 = block_count_2 - inode_map_block_count - inodes_block_count;
 
 	// Reserve space for the data blocks and data block map
-	const uint64_t data_block_count = (block_count_3 * 32) / 33;
+	const uint32_t data_block_count = (block_count_3 * 32) / 33;
 
 	struct main_block_t mb = {
 		.inode_count_limit = inode_count,
@@ -42,13 +42,13 @@ void initialize_fsinfo_from_main_block(struct fsinfo_t *fs, const struct main_bl
 {
 	const uint16_t bs = mb->block_size;
 
-	const uint64_t inode_bitmap_blocks = CEIL_DIV(mb->inode_count_limit, (8 * bs));
-	const uint64_t data_bitmap_blocks = CEIL_DIV(mb->data_block_count, (8 * bs));
+	const uint32_t inode_bitmap_blocks = CEIL_DIV(mb->inode_count_limit, (8 * bs));
+	const uint32_t data_bitmap_blocks = CEIL_DIV(mb->data_block_count, (8 * bs));
 
 	const uint64_t inode_bitmap_pos = MAIN_BLOCK_SIZE;
-	const uint64_t data_blocks_bitmap_pos = inode_bitmap_pos + inode_bitmap_blocks * bs;
-	const uint64_t inodes_pos = data_blocks_bitmap_pos + data_bitmap_blocks * bs;
-	const uint64_t blocks_pos = inodes_pos + mb->inode_count_limit * bs;
+	const uint64_t data_blocks_bitmap_pos = inode_bitmap_pos + inode_bitmap_blocks * (uint64_t)bs;
+	const uint64_t inodes_pos = data_blocks_bitmap_pos + data_bitmap_blocks * (uint64_t)bs;
+	const uint64_t blocks_pos = inodes_pos + mb->inode_count_limit * (uint64_t)bs;
 
 	fs->main_block = *mb;
 	fs->inode_bitmap_blocks = inode_bitmap_blocks;
@@ -79,9 +79,9 @@ void write_main_block(int fd, const struct fsinfo_t *fs)
 	uint8_t *b = buffer;
 	util_writeseq_u32(&b, fs->main_block.inode_count_limit);
 	util_writeseq_u32(&b, fs->main_block.inode_count);
-	util_writeseq_u64(&b, fs->main_block.block_count);
-	util_writeseq_u64(&b, fs->main_block.data_block_count);
-	util_writeseq_u64(&b, fs->main_block.free_data_block_count);
+	util_writeseq_u32(&b, fs->main_block.block_count);
+	util_writeseq_u32(&b, fs->main_block.data_block_count);
+	util_writeseq_u32(&b, fs->main_block.free_data_block_count);
 	util_writeseq_u16(&b, fs->main_block.block_size);
 
 	// TODO: error checking
@@ -99,8 +99,8 @@ void write_inode(int fd, const struct fsinfo_t *fs, uint32_t inode_num, const st
 	util_writeseq_u64(&b, inode->ctime);
 	util_writeseq_u64(&b, inode->mtime);
 	util_writeseq_u64(&b, inode->size);
-	util_writeseq_u64(&b, inode->blocks);
-	util_writeseq_u64(&b, inode->blockpos);
+	util_writeseq_u32(&b, inode->blocks);
+	util_writeseq_u32(&b, inode->blockpos);
 	util_writeseq_u32(&b, inode->uid);
 	util_writeseq_u32(&b, inode->gid);
 	util_writeseq_u16(&b, inode->mode);
@@ -120,9 +120,9 @@ void read_fsinfo(int fd, struct fsinfo_t *fs)
 	uint8_t *b = buffer;
 	util_readseq_u32(&b, &mb.inode_count_limit);
 	util_readseq_u32(&b, &mb.inode_count);
-	util_readseq_u64(&b, &mb.block_count);
-	util_readseq_u64(&b, &mb.data_block_count);
-	util_readseq_u64(&b, &mb.free_data_block_count);
+	util_readseq_u32(&b, &mb.block_count);
+	util_readseq_u32(&b, &mb.data_block_count);
+	util_readseq_u32(&b, &mb.free_data_block_count);
 	util_readseq_u16(&b, &mb.block_size);
 
 	initialize_fsinfo_from_main_block(fs, &mb);
@@ -140,8 +140,8 @@ void read_inode(int fd, const struct fsinfo_t *fs, uint32_t inode_num, struct in
 	util_readseq_u64(&b, &inode->ctime);
 	util_readseq_u64(&b, &inode->mtime);
 	util_readseq_u64(&b, &inode->size);
-	util_readseq_u64(&b, &inode->blocks);
-	util_readseq_u64(&b, &inode->blockpos);
+	util_readseq_u32(&b, &inode->blocks);
+	util_readseq_u32(&b, &inode->blockpos);
 	util_readseq_u32(&b, &inode->uid);
 	util_readseq_u32(&b, &inode->gid);
 	util_readseq_u16(&b, &inode->mode);
@@ -151,14 +151,14 @@ void write_blank_data_bitmap(int fd, const struct fsinfo_t *fs)
 {
 	const uint32_t inode_count = fs->main_block.inode_count_limit;
 	const uint16_t block_size = fs->main_block.block_size;
-	const uint64_t block_count = fs->main_block.block_count;
+	const uint32_t block_count = fs->main_block.block_count;
 	const uint32_t inode_bitmap_blocks = inode_count / block_size
 		+ (inode_count % block_size != 0);
 	uint8_t buffer[block_size];
 	memset(buffer, 0x00, block_size);
 	// TODO: error checking
 	lseek(fd, MAIN_BLOCK_SIZE + inode_bitmap_blocks * block_size, SEEK_SET);
-	for (uint64_t i = 1 + inode_bitmap_blocks; i < block_count; ++i)
+	for (uint32_t i = 1 + inode_bitmap_blocks; i < block_count; ++i)
 		write(fd, buffer, block_size);
 }
 
@@ -172,7 +172,7 @@ void write_blank_inode_bitmap(int fd, const struct fsinfo_t *fs)
 	memset(buffer, 0x00, block_size);
 	// TODO: error checking
 	lseek(fd, MAIN_BLOCK_SIZE, SEEK_SET);
-	for (uint64_t i = 0; i < inode_bitmap_blocks; ++i)
+	for (uint32_t i = 0; i < inode_bitmap_blocks; ++i)
 		write(fd, buffer, block_size);
 }
 
@@ -256,8 +256,8 @@ uint64_t inode_data_write(int fd, struct fsinfo_t *fs, struct inode_t *inode, co
 	if (len == 0)
 		return 0;
 
-	const uint64_t bsize = fs->main_block.block_size;
-	const uint64_t block_count = fs->main_block.data_block_count;
+	const uint32_t bsize = fs->main_block.block_size;
+	const uint32_t block_count = fs->main_block.data_block_count;
 
 	uint64_t old_size = inode->size;
 	uint64_t fsize = old_size;
@@ -267,10 +267,10 @@ uint64_t inode_data_write(int fd, struct fsinfo_t *fs, struct inode_t *inode, co
 	EXPECT_S(fsize <= bsize, "File too large\n");
 
 	// Allocate the required blocks
-	uint64_t old_blocks = inode->blocks;
-	uint64_t new_blocks = fsize / bsize + (fsize % bsize != 0);
-	uint64_t alloc_bcnt = new_blocks - old_blocks;
-	for (uint64_t i = 0; i < block_count && alloc_bcnt > 0; ++i) {
+	uint32_t old_blocks = inode->blocks;
+	uint32_t new_blocks = fsize / bsize + (fsize % bsize != 0);
+	uint32_t alloc_bcnt = new_blocks - old_blocks;
+	for (uint32_t i = 0; i < block_count && alloc_bcnt > 0; ++i) {
 		if (!get_block_state(fd, fs, i)) {
 			// TODO: multiple blocks
 			set_block_state(fd, fs, i, 1);
@@ -288,7 +288,7 @@ uint64_t inode_data_write(int fd, struct fsinfo_t *fs, struct inode_t *inode, co
 		uint64_t b = towrite;
 		if (b > bsize - pos % bsize)
 			b = bsize - pos % bsize;
-		uint64_t bpos = fs->blocks_pos + inode->blockpos * bsize + pos; // TODO: multiple blocks
+		uint64_t bpos = fs->blocks_pos + inode->blockpos * (uint64_t)bsize + pos; // TODO: multiple blocks
 		lseek(fd, bpos, SEEK_SET);
 		uint64_t w = write(fd, buffer + written, b);
 		written += w;
@@ -306,7 +306,7 @@ uint64_t inode_data_read(int fd, struct fsinfo_t *fs, struct inode_t *inode, uin
 	if (len == 0)
 		return 0;
 
-	const uint64_t bsize = fs->main_block.block_size;
+	const uint32_t bsize = fs->main_block.block_size;
 
 	uint64_t fsize = inode->size;
 	if (pos >= fsize)
@@ -321,7 +321,7 @@ uint64_t inode_data_read(int fd, struct fsinfo_t *fs, struct inode_t *inode, uin
 		uint64_t b = toread;
 		if (b > bsize - pos % bsize)
 			b = bsize - pos % bsize;
-		uint64_t bpos = fs->blocks_pos + inode->blockpos * bsize; // TODO: multiple blocks
+		uint64_t bpos = fs->blocks_pos + inode->blockpos * (uint64_t)bsize; // TODO: multiple blocks
 		lseek(fd, bpos, SEEK_SET);
 		uint64_t r = read(fd, buffer + readb, b);
 		if (r == 0)
@@ -335,16 +335,16 @@ uint64_t inode_data_read(int fd, struct fsinfo_t *fs, struct inode_t *inode, uin
 
 void add_inode_to_dir(int fd, struct fsinfo_t *fs, uint32_t dir_inode_num, struct inode_t *dir_inode, uint32_t entry_inode, const char *entry_name)
 {
-	uint64_t entries_count = 0;
+	uint32_t entries_count = 0;
 	if (dir_inode->size > 0) {
 		uint8_t header_buf[8];
 		inode_data_read(fd, fs, dir_inode, header_buf, sizeof(header_buf), 0);
-		util_read_u64(header_buf, &entries_count);
+		util_read_u32(header_buf, &entries_count);
 	}
 
 	uint16_t name_len = strlen(entry_name);
 	uint8_t buffer[512 + 6]; // TODO
-	uint64_t buffer_len = 4 + 2 + name_len;
+	uint32_t buffer_len = 4 + 2 + name_len;
 	util_write_u32(buffer + 0x0, entry_inode);
 	util_write_u16(buffer + 0x4, name_len);
 	memcpy(buffer + 0x6, entry_name, name_len);
@@ -352,7 +352,7 @@ void add_inode_to_dir(int fd, struct fsinfo_t *fs, uint32_t dir_inode_num, struc
 	{
 		// Write the directory header
 		uint8_t header_buf[8];
-		util_write_u64(header_buf, entries_count + 1);
+		util_write_u32(header_buf, entries_count + 1);
 		inode_data_write(fd, fs, dir_inode, header_buf, sizeof(header_buf), 0);
 	}
 
@@ -398,11 +398,11 @@ int get_path_inode(int fd, struct fsinfo_t *fs, const char *path, uint32_t *inod
 			if (s == 0)
 				return 0;
 			uint64_t pos = 8;
-			uint64_t inodes_count;
-			util_read_u64(buffer, &inodes_count);
+			uint32_t inodes_count;
+			util_read_u32(buffer, &inodes_count);
 			int inode_found = 0;
 
-			for (uint64_t i = 0; i < inodes_count; ++i) {
+			for (uint32_t i = 0; i < inodes_count; ++i) {
 				uint16_t name_len;
 				EXPECT(pos + 6 <= s);
 				util_read_u32(buffer + pos, &cur_inode_num);

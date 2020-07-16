@@ -22,8 +22,8 @@
  * -------------------
  */
 
-#define MAIN_BLOCK_SIZE 34
-#define INODE_SIZE 50
+#define MAIN_BLOCK_SIZE 22
+#define INODE_SIZE 42
 
 enum {
 	mode_mask       = 0777,
@@ -36,9 +36,9 @@ struct main_block_t
 {
 	uint32_t inode_count_limit;
 	uint32_t inode_count;
-	uint64_t block_count;
-	uint64_t data_block_count;
-	uint64_t free_data_block_count;
+	uint32_t block_count;
+	uint32_t data_block_count;
+	uint32_t free_data_block_count;
 	uint16_t block_size;
 };
 
@@ -57,8 +57,8 @@ struct inode_t
 	uint64_t ctime;    /* Creation time */
 	uint64_t mtime;    /* Modification time */
 	uint64_t size;     /* The size of the file in bytes */
-	uint64_t blocks;   /* Number of allocated blocks */
-	uint64_t blockpos; /* Position of first block TODO */
+	uint32_t blocks;   /* Number of allocated blocks */
+	uint32_t blockpos; /* Position of first block TODO */
 	uint32_t uid;      /* User ID */
 	uint32_t gid;      /* Group ID */
 	uint16_t mode;     /* File mode (lower 9 bits) and type (upper 7 bits) */

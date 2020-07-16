@@ -49,9 +49,9 @@ static void print_fs_info(void)
 	printf(
 			"Max number of inodes:      %u\n"
 			"Number of inodes:          %u\n"
-			"Total number of blocks:    %lu\n"
-			"Number of usable blocks:   %lu\n"
-			"Number of free blocks:     %lu\n"
+			"Total number of blocks:    %u\n"
+			"Number of usable blocks:   %u\n"
+			"Number of free blocks:     %u\n"
 			"Block size:                %hu\n"
 			"Reserved space:            %.2f%%\n"
 			, fs.main_block.inode_count_limit

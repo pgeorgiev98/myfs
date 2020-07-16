@@ -25,9 +25,9 @@ int main(int argc, char **argv)
 	printf(
 			"Max number of inodes:      %u\n"
 			"Number of inodes:          %u\n"
-			"Total number of blocks:    %lu\n"
-			"Number of free blocks:     %lu\n"
-			"Number of reserved blocks: %lu\n"
+			"Total number of blocks:    %u\n"
+			"Number of free blocks:     %u\n"
+			"Number of reserved blocks: %u\n"
 			"Block size:                %hu\n"
 			, fs.main_block.inode_count_limit
 			, fs.main_block.inode_count
