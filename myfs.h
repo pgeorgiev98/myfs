@@ -23,7 +23,7 @@
  */
 
 #define MAIN_BLOCK_SIZE 22
-#define INODE_SIZE 42
+#define INODE_SIZE 98
 
 enum {
 	mode_mask       = 0777,
@@ -52,16 +52,29 @@ struct fsinfo_t
 	uint64_t blocks_pos;
 };
 
+/* Inode data structure
+ *
+ * blockpos holds the file data block IDs
+ * the first 12 blocks are direct block IDs
+ * the 13th entry is an indirect block (a block containing block IDs)
+ * the 14th entry is a doubly-indirect block
+ * the 15th entry is a triply-indirect block
+ */
+#define INODE_BLKS0 12
+#define INODE_BLKS1  1
+#define INODE_BLKS2  1
+#define INODE_BLKS3  1
+#define INODE_BLKS  15
 struct inode_t
 {
 	uint64_t ctime;    /* Creation time */
 	uint64_t mtime;    /* Modification time */
 	uint64_t size;     /* The size of the file in bytes */
-	uint32_t blocks;   /* Number of allocated blocks */
-	uint32_t blockpos; /* Position of first block TODO */
 	uint32_t uid;      /* User ID */
 	uint32_t gid;      /* Group ID */
 	uint16_t mode;     /* File mode (lower 9 bits) and type (upper 7 bits) */
+	uint32_t blocks;   /* Number of allocated blocks */
+	uint32_t blockpos[INODE_BLKS]; /* data block IDs */
 };
 
 void initialize_fsinfo(struct fsinfo_t *fs, uint64_t size);

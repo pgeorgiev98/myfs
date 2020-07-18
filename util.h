@@ -1,6 +1,9 @@
 #ifndef UTIL_H_INCLUDED
 #define UTIL_H_INCLUDED
 
+// ceil(A/B)
+#define CEIL_DIV(A, B) ((A)/(B) + ((A)%(B) != 0))
+
 static inline void util_write_u16(uint8_t *out, uint16_t v)
 {
 	*(uint16_t *)out = v;

@@ -4,12 +4,11 @@
 #include "asserts.h"
 
 #include "util.h"
+#include "helpers.h"
+
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
-
-// ceil(A/B)
-#define CEIL_DIV(A, B) ((A)/(B) + ((A)%(B) != 0))
 
 void initialize_fsinfo(struct fsinfo_t *fs, uint64_t size)
 {
@@ -100,7 +99,8 @@ void write_inode(int fd, const struct fsinfo_t *fs, uint32_t inode_num, const st
 	util_writeseq_u64(&b, inode->mtime);
 	util_writeseq_u64(&b, inode->size);
 	util_writeseq_u32(&b, inode->blocks);
-	util_writeseq_u32(&b, inode->blockpos);
+	for (int i = 0; i < INODE_BLKS; ++i)
+		util_writeseq_u32(&b, inode->blockpos[i]);
 	util_writeseq_u32(&b, inode->uid);
 	util_writeseq_u32(&b, inode->gid);
 	util_writeseq_u16(&b, inode->mode);
@@ -141,7 +141,8 @@ void read_inode(int fd, const struct fsinfo_t *fs, uint32_t inode_num, struct in
 	util_readseq_u64(&b, &inode->mtime);
 	util_readseq_u64(&b, &inode->size);
 	util_readseq_u32(&b, &inode->blocks);
-	util_readseq_u32(&b, &inode->blockpos);
+	for (int i = 0; i < INODE_BLKS; ++i)
+		util_readseq_u32(&b, &inode->blockpos[i]);
 	util_readseq_u32(&b, &inode->uid);
 	util_readseq_u32(&b, &inode->gid);
 	util_readseq_u16(&b, &inode->mode);
@@ -251,54 +252,220 @@ void set_inode_state(int fd, struct fsinfo_t *fs, uint32_t inode, uint8_t state)
 	write(fd, &data, 1);
 }
 
+/* Allocate block_count blocks and write their IDs to out_blocks
+ *
+ * returns: number of blocks allocated; less than block_count if out of space
+ */
+static uint32_t allocate_blocks(int fd, struct fsinfo_t *fs, uint32_t block_count, uint32_t *out_blocks)
+{
+	// TODO: make this faster
+	uint32_t o = 0;
+	for (uint32_t i = 0; o < block_count && i < fs->main_block.data_block_count; ++i) {
+		if (!get_block_state(fd, fs, i)) {
+			out_blocks[o++] = i;
+			set_block_state(fd, fs, i, 1);
+		}
+	}
+	return o;
+}
+
 uint64_t inode_data_write(int fd, struct fsinfo_t *fs, struct inode_t *inode, const uint8_t *buffer, uint64_t len, uint64_t pos)
 {
 	if (len == 0)
 		return 0;
 
 	const uint32_t bsize = fs->main_block.block_size;
-	const uint32_t block_count = fs->main_block.data_block_count;
+	//const uint32_t block_count = fs->main_block.data_block_count;
 
 	uint64_t old_size = inode->size;
 	uint64_t fsize = old_size;
 	if (pos + len > fsize)
 		fsize = pos + len;
 
-	EXPECT_S(fsize <= bsize, "File too large\n");
+	// TODO: check max file size
+
+	// TODO: move resizing to a seperate function
 
 	// Allocate the required blocks
-	uint32_t old_blocks = inode->blocks;
-	uint32_t new_blocks = fsize / bsize + (fsize % bsize != 0);
-	uint32_t alloc_bcnt = new_blocks - old_blocks;
-	for (uint32_t i = 0; i < block_count && alloc_bcnt > 0; ++i) {
-		if (!get_block_state(fd, fs, i)) {
-			// TODO: multiple blocks
-			set_block_state(fd, fs, i, 1);
-			inode->blockpos = i;
-			++alloc_bcnt;
-			break;
+	const uint32_t old_blocks = inode->blocks;
+	const uint32_t new_blocks = CEIL_DIV(fsize, bsize);
+
+	// Number of blocks to alloc including indirect blocks
+	const struct indirect_block_count_t old_indirect_bcnt =
+		calc_indirect_block_count(bsize, old_blocks);
+	const struct indirect_block_count_t new_indirect_bcnt =
+		calc_indirect_block_count(bsize, new_blocks);
+
+	const uint32_t blocks_to_alloc =
+		new_indirect_bcnt.total_indirect - old_indirect_bcnt.total_indirect +
+		new_blocks - old_blocks;
+
+	// TODO: try not to call malloc when possible
+	uint32_t *blocks = (uint32_t *)malloc(blocks_to_alloc * sizeof(uint32_t));
+	EXPECT_EQUAL(allocate_blocks(fd, fs, blocks_to_alloc, blocks), blocks_to_alloc);
+	const uint32_t indirect_blocks_allocated =
+		new_indirect_bcnt.total_indirect - old_indirect_bcnt.total_indirect;
+	const uint32_t *indirect_blocks = blocks;
+	const uint32_t *data_blocks = blocks + indirect_blocks_allocated;
+
+	// Initialize the new indirect blocks
+	{
+		const uint16_t c = bsize / 4; // blocks per indirect block
+		uint32_t ibptr = 0; // indirect block pointer
+		uint32_t dbptr = 0; // direct block pointer
+		for (uint32_t cur_block = old_blocks; cur_block < new_blocks; ++cur_block) {
+			uint32_t b = cur_block;
+			if (b < 12) {
+				// Set pointer to direct block
+				inode->blockpos[b] = data_blocks[dbptr++];
+			} else if (b < 12 + c) {
+				b -= 12;
+
+				uint32_t b1;
+				uint32_t off1 = b;
+
+				// If needed, set the pointer to the singly-indirect block
+				if (b == 0)
+					inode->blockpos[12] = indirect_blocks[ibptr++];
+				b1 = inode->blockpos[12];
+
+				// Set the pointer to the block
+				write_u32_to_block(fd, fs, b1, off1, data_blocks[dbptr++]);
+			} else if (b < 12 + c + c*c) {
+				b -= 12 + c;
+
+				uint32_t b1;
+				uint32_t off1 = b / c;
+
+				uint32_t b2;
+				uint32_t off2 = b % c;
+
+				// If needed, set the pointer to the doubly-indirect block
+				if (b == 0)
+					inode->blockpos[13] = indirect_blocks[ibptr++];
+				b1 = inode->blockpos[13];
+
+				// If needed, set the pointer to the singly-indirect block
+				if (off2 == 0) {
+					b2 = indirect_blocks[ibptr++];
+					write_u32_to_block(fd, fs, b1, off1, b2);
+				} else {
+					read_u32_from_block(fd, fs, b1, off1, &b2);
+				}
+				// Set the pointer to the block
+				write_u32_to_block(fd, fs, b2, off2, data_blocks[dbptr++]);
+			} else {
+				b -= 12 + c + c*c;
+
+				uint32_t b1;
+				uint32_t off1 = b / (c*c);
+
+				uint32_t b2;
+				uint32_t off2 = (b % (c*c)) / c;
+
+				uint32_t b3;
+				uint32_t off3 = b % c;
+
+				// If needed, set the pointer to the triply-indirect block
+				if (b == 0)
+					inode->blockpos[14] = indirect_blocks[ibptr++];
+				b1 = inode->blockpos[14];
+
+				// If needed, set the pointer to the doubly-indirect block
+				if (b % (c*c) == 0) {
+					b2 = indirect_blocks[ibptr++];
+					write_u32_to_block(fd, fs, b1, off1, b2);
+				} else {
+					read_u32_from_block(fd, fs, b1, off1, &b2);
+				}
+
+				// If needed, set the pointer to the singly-indirect block
+				if (b % c == 0) {
+					b3 = indirect_blocks[ibptr++];
+					write_u32_to_block(fd, fs, b2, off2, b3);
+				} else {
+					read_u32_from_block(fd, fs, b2, off2, &b3);
+				}
+
+				// Set the pointer to the block
+				write_u32_to_block(fd, fs, b3, off3, data_blocks[dbptr++]);
+			}
 		}
+		EXPECT_EQUAL(ibptr, indirect_blocks_allocated);
+		EXPECT_EQUAL(dbptr, new_blocks - old_blocks);
 	}
-	inode->blocks = new_blocks;
 
 	// Write the data
-	uint64_t towrite = len;
-	uint64_t written = 0;
-	while (towrite > 0) {
-		uint64_t b = towrite;
-		if (b > bsize - pos % bsize)
-			b = bsize - pos % bsize;
-		uint64_t bpos = fs->blocks_pos + inode->blockpos * (uint64_t)bsize + pos; // TODO: multiple blocks
-		lseek(fd, bpos, SEEK_SET);
-		uint64_t w = write(fd, buffer + written, b);
-		written += w;
-		towrite -= w;
+	{
+		uint64_t total_towrite = len; // total number of bytes to write
+		uint64_t total_written = 0; // total number of byets written
+		const uint16_t c = bsize / 4; // blocks per indirect block
+		uint64_t cur_pos = pos;
+		while (cur_pos < pos + len) {
+			uint32_t file_block_id = cur_pos / bsize;
+			uint32_t block_id;
+			if (file_block_id < 12) {
+				// Dirrectly get the block id
+				block_id = inode->blockpos[file_block_id];
+			} else if (file_block_id < 12 + c) {
+				// Get the block id from a singly-indirect block
+				uint32_t b = inode->blockpos[12];
+				read_u32_from_block(fd, fs, b, file_block_id - 12, &block_id);
+			} else if (file_block_id < 12 + c + c*c) {
+				// Get the block id from a doubly-indirect block
+				uint32_t fb = file_block_id - 12 - c;
+
+				uint32_t b1 = inode->blockpos[13];
+				uint32_t off1 = fb / c;
+
+				uint32_t b2;
+				uint32_t off2 = fb % c;
+
+				read_u32_from_block(fd, fs, b1, off1, &b2);
+				read_u32_from_block(fd, fs, b2, off2, &block_id);
+			} else {
+				// Get the block id from a triply-indirect block
+				uint32_t fb = file_block_id - 12 - c - c*c;
+
+				uint32_t b1 = inode->blockpos[14];
+				uint32_t off1 = fb / (c*c);
+
+				uint32_t b2;
+				uint32_t off2 = fb % (c*c) / c;
+
+				uint32_t b3;
+				uint32_t off3 = fb % c;
+
+				read_u32_from_block(fd, fs, b1, off1, &b2);
+				read_u32_from_block(fd, fs, b2, off2, &b3);
+				read_u32_from_block(fd, fs, b3, off3, &block_id);
+			}
+			uint64_t p = cur_pos % bsize;
+			uint64_t towrite = total_towrite;
+			uint64_t written = 0;
+			if (towrite > bsize - p)
+				towrite = bsize - p;
+			cur_pos += towrite;
+			total_towrite -= towrite;
+			while (towrite > 0) {
+				lseek(fd, fs->blocks_pos + block_id * (uint64_t)bsize + p, SEEK_SET);
+				uint64_t w = write(fd, buffer + total_written, towrite);
+				towrite -= w;
+				written += w;
+				total_written += w;
+			}
+		}
+		EXPECT_EQUAL(cur_pos, pos + len);
 	}
 
-	inode->size += written;
-	inode->size = fsize;
+	inode->blocks = new_blocks;
+	if (pos + len > inode->size)
+		inode->size = pos + len;
 
-	return written;
+	free(blocks);
+
+	// TODO: error checking
+	return len;
 }
 
 uint64_t inode_data_read(int fd, struct fsinfo_t *fs, struct inode_t *inode, uint8_t *buffer, uint64_t len, uint64_t pos)
@@ -312,32 +479,81 @@ uint64_t inode_data_read(int fd, struct fsinfo_t *fs, struct inode_t *inode, uin
 	if (pos >= fsize)
 		return 0;
 
+	if (pos + len > fsize)
+		len = fsize - pos;
+
+	// TODO: This is duplicated from inode_data_write()
 	// Read the data
-	uint64_t toread = len;
-	if (toread > fsize - pos)
-		toread = fsize - pos;
-	uint64_t readb = 0;
-	while (toread > 0) {
-		uint64_t b = toread;
-		if (b > bsize - pos % bsize)
-			b = bsize - pos % bsize;
-		uint64_t bpos = fs->blocks_pos + inode->blockpos * (uint64_t)bsize; // TODO: multiple blocks
-		lseek(fd, bpos, SEEK_SET);
-		uint64_t r = read(fd, buffer + readb, b);
-		if (r == 0)
-			break;
-		readb += r;
-		toread -= r;
+	{
+		uint64_t total_toread = len; // total number of bytes read
+		uint64_t total_readb = 0; // total number of byets to read
+		const uint16_t c = bsize / 4; // blocks per indirect block
+		uint64_t cur_pos = pos;
+		while (cur_pos < pos + len) {
+			uint32_t file_block_id = cur_pos / bsize;
+			uint32_t block_id;
+			if (file_block_id < 12) {
+				// Dirrectly get the block id
+				block_id = inode->blockpos[file_block_id];
+			} else if (file_block_id < 12 + c) {
+				// Get the block id from a singly-indirect block
+				uint32_t b = inode->blockpos[12];
+				read_u32_from_block(fd, fs, b, file_block_id - 12, &block_id);
+			} else if (file_block_id < 12 + c + c*c) {
+				// Get the block id from a doubly-indirect block
+				uint32_t fb = file_block_id - 12 - c;
+
+				uint32_t b1 = inode->blockpos[13];
+				uint32_t off1 = fb / c;
+
+				uint32_t b2;
+				uint32_t off2 = fb % c;
+
+				read_u32_from_block(fd, fs, b1, off1, &b2);
+				read_u32_from_block(fd, fs, b2, off2, &block_id);
+			} else {
+				// Get the block id from a triply-indirect block
+				uint32_t fb = file_block_id - 12 - c - c*c;
+
+				uint32_t b1 = inode->blockpos[14];
+				uint32_t off1 = fb / (c*c);
+
+				uint32_t b2;
+				uint32_t off2 = fb % (c*c) / c;
+
+				uint32_t b3;
+				uint32_t off3 = fb % c;
+
+				read_u32_from_block(fd, fs, b1, off1, &b2);
+				read_u32_from_block(fd, fs, b2, off2, &b3);
+				read_u32_from_block(fd, fs, b3, off3, &block_id);
+			}
+			uint64_t p = cur_pos % bsize;
+			uint64_t toread = total_toread;
+			uint64_t readb = 0;
+			if (toread > bsize - p)
+				toread = bsize - p;
+			cur_pos += toread;
+			total_toread -= toread;
+			while (toread > 0) {
+				lseek(fd, fs->blocks_pos + block_id * (uint64_t)bsize + p, SEEK_SET);
+				uint64_t r = read(fd, buffer + total_readb, toread);
+				toread -= r;
+				readb += r;
+				total_readb += r;
+			}
+		}
+		EXPECT_EQUAL(cur_pos, pos + len);
 	}
 
-	return readb;
+	return len;
 }
 
 void add_inode_to_dir(int fd, struct fsinfo_t *fs, uint32_t dir_inode_num, struct inode_t *dir_inode, uint32_t entry_inode, const char *entry_name)
 {
 	uint32_t entries_count = 0;
 	if (dir_inode->size > 0) {
-		uint8_t header_buf[8];
+		uint8_t header_buf[4];
 		inode_data_read(fd, fs, dir_inode, header_buf, sizeof(header_buf), 0);
 		util_read_u32(header_buf, &entries_count);
 	}
@@ -351,7 +567,7 @@ void add_inode_to_dir(int fd, struct fsinfo_t *fs, uint32_t dir_inode_num, struc
 
 	{
 		// Write the directory header
-		uint8_t header_buf[8];
+		uint8_t header_buf[4];
 		util_write_u32(header_buf, entries_count + 1);
 		inode_data_write(fd, fs, dir_inode, header_buf, sizeof(header_buf), 0);
 	}
@@ -397,7 +613,7 @@ int get_path_inode(int fd, struct fsinfo_t *fs, const char *path, uint32_t *inod
 			uint64_t s = inode_data_read(fd, fs, &cur_inode, buffer, sizeof(buffer), 0);
 			if (s == 0)
 				return 0;
-			uint64_t pos = 8;
+			uint64_t pos = 4;
 			uint32_t inodes_count;
 			util_read_u32(buffer, &inodes_count);
 			int inode_found = 0;
