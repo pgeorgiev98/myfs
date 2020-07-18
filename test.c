@@ -133,7 +133,7 @@ static void test_inode_create(void)
 	EXPECT_EQUAL(old_count + 10, new_count);
 }
 
-static void test_inode_read_write(void)
+static void test_inode_read_write1(void)
 {
 	struct inode_t in;
 	initialize_inode(&in);
@@ -150,6 +150,90 @@ static void test_inode_read_write(void)
 	EXPECT_EQUAL(len, bytesread);
 	inbuf[len] = '\0';
 	EXPECT_S(strcmp(inbuf, outbuf) == 0, "Wrong inode content. Expected %s, got %s", outbuf, inbuf);
+}
+
+static void test_inode_read_write2(uint32_t file_count, uint32_t *file_sizes)
+{
+	struct file {
+		struct inode_t inode;
+		uint32_t num;
+		uint8_t *data;
+	};
+	struct file files[file_count];
+	for (uint32_t i = 0; i < file_count; ++i) {
+		files[i].data = (uint8_t *)malloc(file_sizes[i]);
+		initialize_inode(&files[i].inode);
+		create_inode(fd, &fs, &files[i].inode, &files[i].num);
+	}
+
+	for (uint32_t i = 0; i < file_count; ++i) {
+		for (int j = 0; j < file_sizes[i]; ++j)
+			files[i].data[j] = 3*j + 5*j + 7;
+		uint64_t written = inode_data_write(fd, &fs, &files[i].inode, files[i].data, file_sizes[i], 0);
+		EXPECT_EQUAL(written, file_sizes[i]);
+		write_inode(fd, &fs, files[i].num, &files[i].inode);
+		{
+			uint8_t *buf = (uint8_t *)malloc(file_sizes[i]);
+			uint64_t readb = inode_data_read(fd, &fs, &files[i].inode, buf, file_sizes[i], 0);
+			EXPECT_EQUAL(readb, file_sizes[i]);
+			for (uint32_t j = 0; j < file_sizes[i]; ++j) {
+				if (files[i].data[j] != buf[j]) {
+					EXPECT_S(0, "Wrong file content (file %u; difference at byte %u/%u)", i, j, file_sizes[i]);
+					break;
+				}
+			}
+			free(buf);
+		}
+	}
+
+	for (uint32_t i = 0; i < file_count; ++i) {
+		uint8_t *buf = (uint8_t *)malloc(file_sizes[i]);
+		uint64_t readb = inode_data_read(fd, &fs, &files[i].inode, buf, file_sizes[i], 0);
+		EXPECT_EQUAL(readb, file_sizes[i]);
+		for (int j = 0; j < file_sizes[i]; ++j) {
+			if (files[i].data[j] != buf[j]) {
+				EXPECT_S(0, "Wrong file content (file %u; difference at byte %u/%u)", i, j, file_sizes[i]);
+				break;
+			}
+		}
+		free(buf);
+	}
+
+	for (uint32_t i = 0; i < file_count; ++i)
+		free(files[i].data);
+}
+
+static void test_inode_read_write_random(uint32_t fsize)
+{
+	struct inode_t inode;
+	uint32_t inode_num;
+	uint8_t *data = (uint8_t *)malloc(fsize);
+	for (uint32_t i = 0; i < fsize; ++i)
+		data[i] = i;
+	initialize_inode(&inode);
+	create_inode(fd, &fs, &inode, &inode_num);
+	inode_data_write(fd, &fs, &inode, data, fsize, 0);
+	for (int i = 0; i < 100; ++i) {
+		uint64_t pos = (i * ((fsize / 3) + 7)) % fsize;
+		uint8_t buf[1] = {i};
+		inode_data_write(fd, &fs, &inode, buf, 1, pos);
+		data[pos] = buf[0];
+	}
+	EXPECT_EQUAL(inode.size, fsize);
+	write_inode(fd, &fs, inode_num, &inode);
+
+	uint8_t *actual = (uint8_t *)malloc(fsize);
+	inode_data_read(fd, &fs, &inode, actual, fsize, 0);
+
+	for (uint32_t i = 0; i < fsize; ++i) {
+		if (data[i] != actual[i]) {
+			EXPECT_S(0, "Wrong file content (difference at byte %u/%u)", i, fsize);
+			break;
+		}
+	}
+
+	free(actual);
+	free(data);
 }
 
 static void test_get_path(void)
@@ -179,22 +263,30 @@ static void test_get_path(void)
 		struct inode_t inode;
 		EXPECT_S(get_path_inode(fd, &fs, path, &inode_num, &inode), "Failed to get inode for path %s", path);
 		EXPECT_S(inode_num == i, "Wrong inode number for %s, expected %d, actual %d", path, i, inode_num);
-		inode_data_write(fd, &fs, &inode, (const uint8_t *)path, strlen(path), 0);
-		write_inode(fd, &fs, inode_num, &inode);
 	}
 }
 
 int main(int argc, char **argv)
 {
-	if (argc != 2 || !strcmp(argv[1], "--help") || !strcmp(argv[1], "-h")) {
-		printf("Usage: %s test_file_name\n", argv[0]);
-		return argc != 2;
+	{
+		int help = (argc == 2 && (!strcmp(argv[1], "--help") || !strcmp(argv[1], "-h")));
+		int wrong_arg = (argc != 3 || (strcmp(argv[2], "short") && strcmp(argv[2], "long")));
+		if (help || wrong_arg) {
+			const char *usage =
+				"Usage: %s test_file_name [short|long]\n"
+				"\n"
+				"  short - Performs a quick test with a few small files\n"
+				"  long  - Performs a longer test with a lots of large files\n";
+			printf(usage, argv[0]);
+			return wrong_arg;
+		}
 	}
+	int short_test = !strcmp(argv[2], "short");
 
 	path = argv[1];
 
-	printf("Creating filesystem\n");
-	create_fs(1024*1024);
+	printf("=== Creating filesystem ===\n");
+	create_fs(short_test ? 16*1024*1024 : 2UL*1024*1024*1024);
 
 	fd = open(argv[1], O_RDWR);
 	if (fd == -1) {
@@ -206,16 +298,39 @@ int main(int argc, char **argv)
 
 	print_fs_info();
 
-	printf("Test inode states\n");
+	printf("=== Test inode states ===\n");
 	test_inode_state();
 
-	printf("Test inode creation\n");
+	printf("=== Test inode creation ===\n");
 	test_inode_create();
 
-	printf("Test inode read/write\n");
-	test_inode_read_write();
+	printf("=== Test basic file read/write ===\n");
+	test_inode_read_write1();
 
-	printf("Test get_path_inode()\n");
+	// Test with files up to 4KB
+	printf("=== Test small file read/write ===\n");
+	uint32_t file_sizes[10] = {1300, 1500, 1000, 2300, 4000, 2500, 2300, 1000, 500, 3000};
+	test_inode_read_write2(10, file_sizes);
+
+	if (!short_test) {
+		// Test with files up to 4MB
+		printf("=== Test medium file read/write ===\n");
+		for (int i = 0; i < 10; ++i)
+			file_sizes[i] *= 1000;
+		test_inode_read_write2(10, file_sizes);
+
+		// Test with files up to 400MB
+		printf("=== Test large file read/write ===\n");
+		uint32_t large_file_sizes[3] = {400, 300, 500};
+		for (int i = 0; i < 3; ++i)
+			large_file_sizes[i] *= 1000000;
+		test_inode_read_write2(3, large_file_sizes);
+	}
+
+	printf("=== Test random file write() ===\n");
+	test_inode_read_write_random(short_test ? 50000 : 16*1024*1024);
+
+	printf("=== Test get_path_inode() ===\n");
 	test_get_path();
 
 	close(fd);

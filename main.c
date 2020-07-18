@@ -100,11 +100,11 @@ static int myfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	if (s == 0)
 		return 0;
 
-	uint64_t pos = 8;
-	uint64_t inodes_count;
-	util_read_u64(buffer, &inodes_count);
+	uint64_t pos = 4;
+	uint32_t inodes_count;
+	util_read_u32(buffer, &inodes_count);
 
-	for (uint64_t i = 0; i < inodes_count; ++i) {
+	for (uint32_t i = 0; i < inodes_count; ++i) {
 		uint16_t name_len;
 		EXPECT(pos + 6 <= s);
 		util_read_u16(buffer + pos + 4, &name_len);
@@ -155,6 +155,7 @@ static int myfs_write(const char *path, const char *buf, size_t size, off_t offs
 
 static int myfs_mknod(const char *path, mode_t mode, dev_t dev)
 {
+	printf("mknod: %s\n", path);
 	int len = strlen(path);
 	int i;
 	for (i = len - 1; i >= 0; --i)
@@ -171,6 +172,7 @@ static int myfs_mknod(const char *path, mode_t mode, dev_t dev)
 		strncpy(parent_path, path, i);
 		parent_path[i] = '\0';
 		if (!get_path_inode(fd, &fs, parent_path, &parent_inode_num, &parent_inode)) {
+			printf("noent\n");
 			return -ENOENT;
 		}
 		if ((parent_inode.mode & mode_ftype_mask) != mode_ftype_dir)
@@ -193,6 +195,7 @@ static int myfs_mknod(const char *path, mode_t mode, dev_t dev)
 	create_inode(fd, &fs, &inode, &inode_num);
 	add_inode_to_dir(fd, &fs, parent_inode_num, &parent_inode, inode_num, filename);
 
+	printf("ok\n");
 	return 0;
 }
 
