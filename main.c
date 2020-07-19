@@ -77,10 +77,50 @@ static int myfs_getattr(const char *path, struct stat *stbuf,
 		stbuf->st_mode = mode;
 		stbuf->st_nlink = 1; // TODO
 		stbuf->st_size = inode.size;
+		stbuf->st_uid = inode.uid;
+		stbuf->st_gid = inode.gid;
 		return 0;
 	}
 
 	return -ENOENT;
+}
+
+static int myfs_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
+{
+	uint32_t inode_num;
+	struct inode_t inode;
+
+	if (!strcmp(path, "/")) {
+		inode_num = 0;
+		read_inode(fd, &fs, inode_num, &inode);
+	} else if (!get_path_inode(fd, &fs, path, &inode_num, &inode)) {
+		return -ENOENT;
+	}
+
+	inode.mode &= ~0777;
+	inode.mode |= mode & 0777;
+	write_inode(fd, &fs, inode_num, &inode);
+
+	return 0;
+}
+
+static int myfs_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi)
+{
+	uint32_t inode_num;
+	struct inode_t inode;
+
+	if (!strcmp(path, "/")) {
+		inode_num = 0;
+		read_inode(fd, &fs, inode_num, &inode);
+	} else if (!get_path_inode(fd, &fs, path, &inode_num, &inode)) {
+		return -ENOENT;
+	}
+
+	inode.uid = uid;
+	inode.gid = gid;
+	write_inode(fd, &fs, inode_num, &inode);
+
+	return 0;
 }
 
 static int myfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
@@ -155,7 +195,7 @@ static int myfs_write(const char *path, const char *buf, size_t size, off_t offs
 
 static int myfs_mknod(const char *path, mode_t mode, dev_t dev)
 {
-	printf("mknod: %s\n", path);
+	struct fuse_context *context = fuse_get_context();
 	int len = strlen(path);
 	int i;
 	for (i = len - 1; i >= 0; --i)
@@ -171,10 +211,8 @@ static int myfs_mknod(const char *path, mode_t mode, dev_t dev)
 		char parent_path[i + 1];
 		strncpy(parent_path, path, i);
 		parent_path[i] = '\0';
-		if (!get_path_inode(fd, &fs, parent_path, &parent_inode_num, &parent_inode)) {
-			printf("noent\n");
+		if (!get_path_inode(fd, &fs, parent_path, &parent_inode_num, &parent_inode))
 			return -ENOENT;
-		}
 		if ((parent_inode.mode & mode_ftype_mask) != mode_ftype_dir)
 			return -ENOTDIR;
 	} else {
@@ -187,20 +225,19 @@ static int myfs_mknod(const char *path, mode_t mode, dev_t dev)
 		.mtime = 0,
 		.size = 0,
 		.blocks = 0,
-		.uid = 0,
-		.gid = 0,
-		.mode = 0644 | mode_ftype_file,
+		.uid = context->uid,
+		.gid = context->gid,
+		.mode = (mode & 0777) | mode_ftype_file,
 	};
 	uint32_t inode_num;
 	create_inode(fd, &fs, &inode, &inode_num);
 	add_inode_to_dir(fd, &fs, parent_inode_num, &parent_inode, inode_num, filename);
-
-	printf("ok\n");
 	return 0;
 }
 
 static int myfs_mkdir(const char *path, mode_t mode)
 {
+	struct fuse_context *context = fuse_get_context();
 	int len = strlen(path);
 	int i;
 	for (i = len - 1; i >= 0; --i)
@@ -216,9 +253,8 @@ static int myfs_mkdir(const char *path, mode_t mode)
 		char parent_path[i + 1];
 		strncpy(parent_path, path, i);
 		parent_path[i] = '\0';
-		if (!get_path_inode(fd, &fs, parent_path, &parent_inode_num, &parent_inode)) {
+		if (!get_path_inode(fd, &fs, parent_path, &parent_inode_num, &parent_inode))
 			return -ENOENT;
-		}
 		if ((parent_inode.mode & mode_ftype_mask) != mode_ftype_dir)
 			return -ENOTDIR;
 	} else {
@@ -231,9 +267,9 @@ static int myfs_mkdir(const char *path, mode_t mode)
 		.mtime = 0,
 		.size = 0,
 		.blocks = 0,
-		.uid = 0,
-		.gid = 0,
-		.mode = 0755 | mode_ftype_dir,
+		.uid = context->uid,
+		.gid = context->gid,
+		.mode = (mode & 0777) | mode_ftype_dir,
 	};
 	uint32_t inode_num;
 	create_inode(fd, &fs, &inode, &inode_num);
@@ -245,6 +281,8 @@ static int myfs_mkdir(const char *path, mode_t mode)
 static const struct fuse_operations myfs_oper = {
 	.init       = myfs_init,
 	.getattr    = myfs_getattr,
+	.chmod      = myfs_chmod,
+	.chown      = myfs_chown,
 	.readdir    = myfs_readdir,
 	.open       = myfs_open,
 	.read       = myfs_read,
