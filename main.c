@@ -280,6 +280,21 @@ static int myfs_mkdir(const char *path, mode_t mode)
 	return 0;
 }
 
+static int myfs_truncate(const char *path, off_t size, struct fuse_file_info *fi)
+{
+	uint32_t inode_num;
+	struct inode_t inode;
+	if (!get_path_inode(fd, &fs, path, &inode_num, &inode))
+		return -ENOENT;
+
+	if ((inode.mode & mode_ftype_mask) == mode_ftype_dir)
+		return -EISDIR;
+
+	resize_file(fd, &fs, &inode, size);
+
+	return 0;
+}
+
 static const struct fuse_operations myfs_oper = {
 	.init       = myfs_init,
 	.getattr    = myfs_getattr,
@@ -291,6 +306,7 @@ static const struct fuse_operations myfs_oper = {
 	.write      = myfs_write,
 	.mknod      = myfs_mknod,
 	.mkdir      = myfs_mkdir,
+	.truncate   = myfs_truncate,
 };
 
 int main(int argc, char *argv[])

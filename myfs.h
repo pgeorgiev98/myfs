@@ -100,6 +100,7 @@ void set_block_state(int fd, struct fsinfo_t *fs, uint32_t block, uint8_t state)
 
 uint64_t inode_data_write(int fd, struct fsinfo_t *fs, struct inode_t *inode, const uint8_t *buffer, uint64_t len, uint64_t pos);
 uint64_t inode_data_read(int fd, struct fsinfo_t *fs, struct inode_t *inode, uint8_t *buffer, uint64_t len, uint64_t pos);
+void resize_file(int fd, struct fsinfo_t *fs, struct inode_t *inode, uint64_t size);
 
 void add_inode_to_dir(int fd, struct fsinfo_t *fs, uint32_t dir_inode_num, struct inode_t *dir_inode, uint32_t entry_inode_num, const char *entry_name);
 

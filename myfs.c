@@ -266,7 +266,17 @@ static uint32_t allocate_blocks(int fd, struct fsinfo_t *fs, uint32_t block_coun
 			set_block_state(fd, fs, i, 1);
 		}
 	}
+	fs->main_block.free_data_block_count -= o;
 	return o;
+}
+
+static void release_blocks(int fd, struct fsinfo_t *fs, uint32_t *blocks, uint32_t block_count)
+{
+	EXPECT(block_count + fs->main_block.free_data_block_count <= fs->main_block.data_block_count);
+	// TODO: make this faster
+	for (uint32_t i = 0; i < block_count; ++i)
+		set_block_state(fd, fs, blocks[i], 0);
+	fs->main_block.free_data_block_count += block_count;
 }
 
 uint64_t inode_data_write(int fd, struct fsinfo_t *fs, struct inode_t *inode, const uint8_t *buffer, uint64_t len, uint64_t pos)
@@ -277,123 +287,8 @@ uint64_t inode_data_write(int fd, struct fsinfo_t *fs, struct inode_t *inode, co
 	const uint32_t bsize = fs->main_block.block_size;
 	//const uint32_t block_count = fs->main_block.data_block_count;
 
-	uint64_t old_size = inode->size;
-	uint64_t fsize = old_size;
-	if (pos + len > fsize)
-		fsize = pos + len;
-
-	// TODO: check max file size
-
-	// TODO: move resizing to a seperate function
-
-	// Allocate the required blocks
-	const uint32_t old_blocks = inode->blocks;
-	const uint32_t new_blocks = CEIL_DIV(fsize, bsize);
-
-	// Number of blocks to alloc including indirect blocks
-	const struct indirect_block_count_t old_indirect_bcnt =
-		calc_indirect_block_count(bsize, old_blocks);
-	const struct indirect_block_count_t new_indirect_bcnt =
-		calc_indirect_block_count(bsize, new_blocks);
-
-	const uint32_t blocks_to_alloc =
-		new_indirect_bcnt.total_indirect - old_indirect_bcnt.total_indirect +
-		new_blocks - old_blocks;
-
-	// TODO: try not to call malloc when possible
-	uint32_t *blocks = (uint32_t *)malloc(blocks_to_alloc * sizeof(uint32_t));
-	EXPECT_EQUAL(allocate_blocks(fd, fs, blocks_to_alloc, blocks), blocks_to_alloc);
-	const uint32_t indirect_blocks_allocated =
-		new_indirect_bcnt.total_indirect - old_indirect_bcnt.total_indirect;
-	const uint32_t *indirect_blocks = blocks;
-	const uint32_t *data_blocks = blocks + indirect_blocks_allocated;
-
-	// Initialize the new indirect blocks
-	{
-		const uint16_t c = bsize / 4; // blocks per indirect block
-		uint32_t ibptr = 0; // indirect block pointer
-		uint32_t dbptr = 0; // direct block pointer
-		for (uint32_t cur_block = old_blocks; cur_block < new_blocks; ++cur_block) {
-			uint32_t b = cur_block;
-			if (b < 12) {
-				// Set pointer to direct block
-				inode->blockpos[b] = data_blocks[dbptr++];
-			} else if (b < 12 + c) {
-				b -= 12;
-
-				uint32_t b1;
-				uint32_t off1 = b;
-
-				// If needed, set the pointer to the singly-indirect block
-				if (b == 0)
-					inode->blockpos[12] = indirect_blocks[ibptr++];
-				b1 = inode->blockpos[12];
-
-				// Set the pointer to the block
-				write_u32_to_block(fd, fs, b1, off1, data_blocks[dbptr++]);
-			} else if (b < 12 + c + c*c) {
-				b -= 12 + c;
-
-				uint32_t b1;
-				uint32_t off1 = b / c;
-
-				uint32_t b2;
-				uint32_t off2 = b % c;
-
-				// If needed, set the pointer to the doubly-indirect block
-				if (b == 0)
-					inode->blockpos[13] = indirect_blocks[ibptr++];
-				b1 = inode->blockpos[13];
-
-				// If needed, set the pointer to the singly-indirect block
-				if (off2 == 0) {
-					b2 = indirect_blocks[ibptr++];
-					write_u32_to_block(fd, fs, b1, off1, b2);
-				} else {
-					read_u32_from_block(fd, fs, b1, off1, &b2);
-				}
-				// Set the pointer to the block
-				write_u32_to_block(fd, fs, b2, off2, data_blocks[dbptr++]);
-			} else {
-				b -= 12 + c + c*c;
-
-				uint32_t b1;
-				uint32_t off1 = b / (c*c);
-
-				uint32_t b2;
-				uint32_t off2 = (b % (c*c)) / c;
-
-				uint32_t b3;
-				uint32_t off3 = b % c;
-
-				// If needed, set the pointer to the triply-indirect block
-				if (b == 0)
-					inode->blockpos[14] = indirect_blocks[ibptr++];
-				b1 = inode->blockpos[14];
-
-				// If needed, set the pointer to the doubly-indirect block
-				if (b % (c*c) == 0) {
-					b2 = indirect_blocks[ibptr++];
-					write_u32_to_block(fd, fs, b1, off1, b2);
-				} else {
-					read_u32_from_block(fd, fs, b1, off1, &b2);
-				}
-
-				// If needed, set the pointer to the singly-indirect block
-				if (b % c == 0) {
-					b3 = indirect_blocks[ibptr++];
-					write_u32_to_block(fd, fs, b2, off2, b3);
-				} else {
-					read_u32_from_block(fd, fs, b2, off2, &b3);
-				}
-
-				// Set the pointer to the block
-				write_u32_to_block(fd, fs, b3, off3, data_blocks[dbptr++]);
-			}
-		}
-		EXPECT_EQUAL(ibptr, indirect_blocks_allocated);
-		EXPECT_EQUAL(dbptr, new_blocks - old_blocks);
-	}
+	if (pos + len > inode->size)
+		resize_file(fd, fs, inode, pos + len);
 
 	// Write the data
 	{
@@ -457,12 +352,6 @@ uint64_t inode_data_write(int fd, struct fsinfo_t *fs, struct inode_t *inode, co
 		}
 		EXPECT_EQUAL(cur_pos, pos + len);
 	}
-
-	inode->blocks = new_blocks;
-	if (pos + len > inode->size)
-		inode->size = pos + len;
-
-	free(blocks);
 
 	// TODO: error checking
 	return len;
@@ -652,4 +541,211 @@ int get_path_inode(int fd, struct fsinfo_t *fs, const char *path, uint32_t *inod
 	*inode_num = cur_inode_num;
 	*inode = cur_inode;
 	return 1;
+}
+
+void resize_file(int fd, struct fsinfo_t *fs, struct inode_t *inode, uint64_t size)
+{
+	// TODO: check max file size
+
+	const uint32_t bsize = fs->main_block.block_size;
+	const uint32_t old_blocks = inode->blocks;
+	const uint32_t new_blocks = CEIL_DIV(size, bsize);
+
+	const struct indirect_block_count_t old_indirect_bcnt =
+		calc_indirect_block_count(bsize, old_blocks);
+	const struct indirect_block_count_t new_indirect_bcnt =
+		calc_indirect_block_count(bsize, new_blocks);
+
+	if (new_blocks > old_blocks) {
+		// Allocate the required blocks
+
+		// Number of blocks to alloc including indirect blocks
+		const uint32_t blocks_to_alloc =
+			new_indirect_bcnt.total_indirect - old_indirect_bcnt.total_indirect +
+			new_blocks - old_blocks;
+
+		// TODO: try not to call malloc when possible
+		uint32_t *blocks = (uint32_t *)malloc(blocks_to_alloc * sizeof(uint32_t));
+		EXPECT_EQUAL(allocate_blocks(fd, fs, blocks_to_alloc, blocks), blocks_to_alloc);
+		const uint32_t indirect_blocks_allocated =
+			new_indirect_bcnt.total_indirect - old_indirect_bcnt.total_indirect;
+		const uint32_t *indirect_blocks = blocks;
+		const uint32_t *data_blocks = blocks + indirect_blocks_allocated;
+
+		// Initialize the new indirect blocks
+		const uint16_t c = bsize / 4; // blocks per indirect block
+		uint32_t ibptr = 0; // indirect block pointer
+		uint32_t dbptr = 0; // direct block pointer
+		for (uint32_t cur_block = old_blocks; cur_block < new_blocks; ++cur_block) {
+			uint32_t b = cur_block;
+			if (b < 12) {
+				// Set pointer to direct block
+				inode->blockpos[b] = data_blocks[dbptr++];
+			} else if (b < 12 + c) {
+				b -= 12;
+
+				uint32_t b1;
+				uint32_t off1 = b;
+
+				// If needed, set the pointer to the singly-indirect block
+				if (b == 0)
+					inode->blockpos[12] = indirect_blocks[ibptr++];
+				b1 = inode->blockpos[12];
+
+				// Set the pointer to the block
+				write_u32_to_block(fd, fs, b1, off1, data_blocks[dbptr++]);
+			} else if (b < 12 + c + c*c) {
+				b -= 12 + c;
+
+				uint32_t b1;
+				uint32_t off1 = b / c;
+
+				uint32_t b2;
+				uint32_t off2 = b % c;
+
+				// If needed, set the pointer to the doubly-indirect block
+				if (b == 0)
+					inode->blockpos[13] = indirect_blocks[ibptr++];
+				b1 = inode->blockpos[13];
+
+				// If needed, set the pointer to the singly-indirect block
+				if (off2 == 0) {
+					b2 = indirect_blocks[ibptr++];
+					write_u32_to_block(fd, fs, b1, off1, b2);
+				} else {
+					read_u32_from_block(fd, fs, b1, off1, &b2);
+				}
+				// Set the pointer to the block
+				write_u32_to_block(fd, fs, b2, off2, data_blocks[dbptr++]);
+			} else {
+				b -= 12 + c + c*c;
+
+				uint32_t b1;
+				uint32_t off1 = b / (c*c);
+
+				uint32_t b2;
+				uint32_t off2 = (b % (c*c)) / c;
+
+				uint32_t b3;
+				uint32_t off3 = b % c;
+
+				// If needed, set the pointer to the triply-indirect block
+				if (b == 0)
+					inode->blockpos[14] = indirect_blocks[ibptr++];
+				b1 = inode->blockpos[14];
+
+				// If needed, set the pointer to the doubly-indirect block
+				if (b % (c*c) == 0) {
+					b2 = indirect_blocks[ibptr++];
+					write_u32_to_block(fd, fs, b1, off1, b2);
+				} else {
+					read_u32_from_block(fd, fs, b1, off1, &b2);
+				}
+
+				// If needed, set the pointer to the singly-indirect block
+				if (b % c == 0) {
+					b3 = indirect_blocks[ibptr++];
+					write_u32_to_block(fd, fs, b2, off2, b3);
+				} else {
+					read_u32_from_block(fd, fs, b2, off2, &b3);
+				}
+
+				// Set the pointer to the block
+				write_u32_to_block(fd, fs, b3, off3, data_blocks[dbptr++]);
+			}
+		}
+		EXPECT_EQUAL(ibptr, indirect_blocks_allocated);
+		EXPECT_EQUAL(dbptr, new_blocks - old_blocks);
+
+		free(blocks);
+
+	} else if (new_blocks < old_blocks) {
+		// Number of blocks to release including indirect blocks
+		const uint32_t blocks_to_release =
+			old_indirect_bcnt.total_indirect - new_indirect_bcnt.total_indirect +
+			old_blocks - new_blocks;
+
+		// TODO: try not to call malloc when possible
+		uint32_t *blocks = (uint32_t *)malloc(blocks_to_release * sizeof(uint32_t));
+		uint32_t bptr = 0;
+
+
+		// Initialize the new indirect blocks
+		const uint16_t c = bsize / 4; // blocks per indirect block
+		for (uint32_t cur_block = old_blocks; cur_block-- > new_blocks; ) {
+			uint32_t b = cur_block;
+			if (b < 12) {
+				// Release direct block
+				blocks[bptr++] = inode->blockpos[b];
+			} else if (b < 12 + c) {
+				b -= 12;
+
+				uint32_t b1 = inode->blockpos[12];
+				uint32_t off1 = b;
+
+				// If needed, release the singly-indirect block
+				if (b == 0)
+					blocks[bptr++] = b1;
+
+				// Release the direct block
+				read_u32_from_block(fd, fs, b1, off1, &blocks[bptr++]);
+			} else if (b < 12 + c + c*c) {
+				b -= 12 + c;
+
+				uint32_t b1 = inode->blockpos[13];
+				uint32_t off1 = b / c;
+
+				uint32_t b2;
+				uint32_t off2 = b % c;
+				read_u32_from_block(fd, fs, b1, off1, &b2);
+
+				// If needed, release the doubly-indirect block
+				if (b == 0)
+					blocks[bptr++] = b1;
+
+				// If needed, release the singly-indirect block
+				if (off2 == 0)
+					blocks[bptr++] = b2;
+
+				// Release the direct block
+				read_u32_from_block(fd, fs, b2, off2, &blocks[bptr++]);
+			} else {
+				b -= 12 + c + c*c;
+
+				uint32_t b1 = inode->blockpos[14];
+				uint32_t off1 = b / (c*c);
+
+				uint32_t b2;
+				uint32_t off2 = (b % (c*c)) / c;
+				read_u32_from_block(fd, fs, b1, off1, &b2);
+
+				uint32_t b3;
+				uint32_t off3 = b % c;
+				read_u32_from_block(fd, fs, b2, off2, &b3);
+
+				// If needed, release the triply-indirect block
+				if (b == 0)
+					blocks[bptr++] = b1;
+
+				// If needed, release the doubly-indirect block
+				if (b % (c*c) == 0)
+					blocks[bptr++] = b2;
+
+				// If needed, release the singly-indirect block
+				if (b % c == 0)
+					blocks[bptr++] = b3;
+
+				// Release the direct block
+				read_u32_from_block(fd, fs, b3, off3, &blocks[bptr++]);
+			}
+		}
+		EXPECT_EQUAL(bptr, blocks_to_release);
+
+		release_blocks(fd, fs, blocks, bptr);
+
+		free(blocks);
+	}
+
+	inode->size = size;
+	inode->blocks = new_blocks;
 }
