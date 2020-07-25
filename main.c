@@ -146,14 +146,16 @@ static int myfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 
 	for (uint32_t i = 0; i < inodes_count; ++i) {
 		uint16_t name_len;
-		EXPECT(pos + 6 <= s);
-		util_read_u16(buffer + pos + 4, &name_len);
-		EXPECT(pos + 6 + name_len <= s);
-		char name[513];
-		memcpy(name, buffer + pos + 6, name_len);
+		uint16_t entry_len;
+		EXPECT(pos + 8 <= s);
+		util_read_u16(buffer + pos + 0x4, &entry_len);
+		util_read_u16(buffer + pos + 0x6, &name_len);
+		EXPECT(pos + 8 + name_len <= s);
+		char name[513]; // TODO
+		memcpy(name, buffer + pos + 0x8, name_len);
 		name[name_len] = '\0';
 		filler(buf, name, NULL, 0, 0);
-		pos += 6 + name_len;
+		pos += entry_len;
 	}
 
 	return 0;

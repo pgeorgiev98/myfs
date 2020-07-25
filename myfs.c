@@ -559,11 +559,15 @@ void add_inode_to_dir(int fd, struct fsinfo_t *fs, uint32_t dir_inode_num, struc
 	}
 
 	uint16_t name_len = strlen(entry_name);
-	uint8_t buffer[512 + 6]; // TODO
-	uint32_t buffer_len = 4 + 2 + name_len;
+	uint16_t padding = 32;
+	uint16_t entry_len = name_len + padding + 10;
+
+	uint8_t buffer[512 + 10]; // TODO
 	util_write_u32(buffer + 0x0, entry_inode);
-	util_write_u16(buffer + 0x4, name_len);
-	memcpy(buffer + 0x6, entry_name, name_len);
+	util_write_u16(buffer + 0x4, entry_len);
+	util_write_u16(buffer + entry_len - 0x2, entry_len);
+	util_write_u16(buffer + 0x6, name_len);
+	memcpy(buffer + 0x8, entry_name, name_len);
 
 	{
 		// Write the directory header
@@ -573,7 +577,7 @@ void add_inode_to_dir(int fd, struct fsinfo_t *fs, uint32_t dir_inode_num, struc
 	}
 
 	// Write the new entry to the directory
-	inode_data_write(fd, fs, dir_inode, buffer, buffer_len, dir_inode->size);
+	inode_data_write(fd, fs, dir_inode, buffer, entry_len, dir_inode->size);
 
 	// Update the directory inode
 	write_inode(fd, fs, dir_inode_num, dir_inode);
@@ -609,7 +613,7 @@ int get_path_inode(int fd, struct fsinfo_t *fs, const char *path, uint32_t *inod
 		char c = path[fname_end];
 		if (c == '\0' || c == '/') {
 			// Search for a file named `path[fname_begin:fname_end]` in the current inode
-			uint8_t buffer[fs->main_block.block_size];
+			uint8_t buffer[fs->main_block.block_size]; // TODO: malloc or something
 			uint64_t s = inode_data_read(fd, fs, &cur_inode, buffer, sizeof(buffer), 0);
 			if (s == 0)
 				return 0;
@@ -619,18 +623,20 @@ int get_path_inode(int fd, struct fsinfo_t *fs, const char *path, uint32_t *inod
 			int inode_found = 0;
 
 			for (uint32_t i = 0; i < inodes_count; ++i) {
+				uint16_t entry_len;
 				uint16_t name_len;
-				EXPECT(pos + 6 <= s);
+				EXPECT(pos + 8 <= s);
 				util_read_u32(buffer + pos, &cur_inode_num);
-				util_read_u16(buffer + pos + 4, &name_len);
-				EXPECT(pos + 6 + name_len <= s);
+				util_read_u16(buffer + pos + 0x4, &entry_len);
+				util_read_u16(buffer + pos + 0x6, &name_len);
+				EXPECT(pos + 8 + name_len <= s);
 				if (name_len == fname_end - fname_begin &&
-						strncmp((const char *)(buffer + pos + 6), path + fname_begin, name_len) == 0) {
+						strncmp((const char *)(buffer + pos + 0x8), path + fname_begin, name_len) == 0) {
 					read_inode(fd, fs, cur_inode_num, &cur_inode);
 					inode_found = 1;
 					break;
 				}
-				pos += 6 + name_len;
+				pos += entry_len;
 			}
 
 			if (!inode_found)
