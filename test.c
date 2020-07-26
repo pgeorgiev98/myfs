@@ -261,8 +261,54 @@ static void test_get_path(void)
 		sprintf(path + 6, "%d", i);
 		uint32_t inode_num;
 		struct inode_t inode;
-		EXPECT_S(get_path_inode(fd, &fs, path, &inode_num, &inode), "Failed to get inode for path %s", path);
+		EXPECT_S(get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL), "Failed to get inode for path %s", path);
 		EXPECT_S(inode_num == i, "Wrong inode number for %s, expected %d, actual %d", path, i, inode_num);
+	}
+}
+
+static void test_remove_files(int file_count, int *remove_order)
+{
+	write_blank_fs(fd, &fs);
+	struct inode_t root_inode;
+	read_inode(fd, &fs, 0, &root_inode);
+
+	for (int i = 0; i < file_count; ++i) {
+		struct inode_t inode;
+		initialize_inode(&inode);
+		uint32_t inode_num;
+		create_inode(fd, &fs, &inode, &inode_num);
+		EXPECT_EQUAL(inode_num, i + 1);
+
+		char name[64];
+		strcpy(name, "file-");
+		sprintf(name + 5, "%d", i);
+		add_inode_to_dir(fd, &fs, 0, &root_inode, inode_num, name);
+	}
+	write_inode(fd, &fs, 0, &root_inode);
+
+	int file_exists[file_count];
+	for (int i = 0; i < file_count; ++i)
+		file_exists[i] = 1;
+
+	for (int j = 0; j < file_count; ++j) {
+		uint32_t removed = remove_order[j];
+		EXPECT_EQUAL(file_exists[removed], remove_inode_from_dir(fd, &fs, &root_inode, removed + 1));
+		write_inode(fd, &fs, 0, &root_inode);
+		file_exists[removed] = 0;
+
+		for (int i = 0; i < file_count; ++i) {
+			char path[64];
+			strcpy(path, "/file-");
+			sprintf(path + 6, "%d", i);
+			uint32_t inode_num;
+			struct inode_t inode;
+			if (file_exists[i]) {
+				EXPECT_S(get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL), "Failed to get inode for path %s", path);
+				EXPECT_EQUAL(inode_num, i + 1);
+			} else {
+				EXPECT_S(!get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL), "File %s exists, but it should've been removed", path);
+			}
+		}
 	}
 }
 
@@ -332,6 +378,16 @@ int main(int argc, char **argv)
 
 	printf("=== Test get_path_inode() ===\n");
 	test_get_path();
+
+	printf("=== Test remove_file() ===\n");
+	{
+		int order[10] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+		test_remove_files(10, order);
+	}
+	{
+		int order[10] = {9, 8, 7, 6, 5, 4, 3, 2, 1, 0};
+		test_remove_files(10, order);
+	}
 
 	close(fd);
 

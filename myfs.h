@@ -102,10 +102,14 @@ uint64_t inode_data_write(int fd, struct fsinfo_t *fs, struct inode_t *inode, co
 uint64_t inode_data_read(int fd, struct fsinfo_t *fs, struct inode_t *inode, uint8_t *buffer, uint64_t len, uint64_t pos);
 void resize_file(int fd, struct fsinfo_t *fs, struct inode_t *inode, uint64_t size);
 
+void remove_file(int fd, struct fsinfo_t *fs, uint32_t inode_num, struct inode_t *inode);
+
 void add_inode_to_dir(int fd, struct fsinfo_t *fs, uint32_t dir_inode_num, struct inode_t *dir_inode, uint32_t entry_inode_num, const char *entry_name);
+int remove_inode_from_dir(int fd, struct fsinfo_t *fs, struct inode_t *dir_inode, uint32_t entry_inode_num);
 
 void write_root_directory(int fd, struct fsinfo_t *fs);
 
-int get_path_inode(int fd, struct fsinfo_t *fs, const char *path, uint32_t *inode_num, struct inode_t *inode);
+int get_path_inode(int fd, struct fsinfo_t *fs, const char *path, uint32_t *inode_num, struct inode_t *inode,
+		uint32_t *dir_inode_num, struct inode_t *dir_inode);
 
 #endif

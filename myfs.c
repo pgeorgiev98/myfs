@@ -441,10 +441,12 @@ uint64_t inode_data_read(int fd, struct fsinfo_t *fs, struct inode_t *inode, uin
 void add_inode_to_dir(int fd, struct fsinfo_t *fs, uint32_t dir_inode_num, struct inode_t *dir_inode, uint32_t entry_inode, const char *entry_name)
 {
 	uint32_t entries_count = 0;
+	uint16_t starting_pos = 0;
 	if (dir_inode->size > 0) {
-		uint8_t header_buf[4];
+		uint8_t header_buf[6];
 		inode_data_read(fd, fs, dir_inode, header_buf, sizeof(header_buf), 0);
 		util_read_u32(header_buf, &entries_count);
+		util_read_u16(header_buf + 0x4, &starting_pos);
 	}
 
 	uint16_t name_len = strlen(entry_name);
@@ -460,8 +462,9 @@ void add_inode_to_dir(int fd, struct fsinfo_t *fs, uint32_t dir_inode_num, struc
 
 	{
 		// Write the directory header
-		uint8_t header_buf[4];
+		uint8_t header_buf[6];
 		util_write_u32(header_buf, entries_count + 1);
+		util_write_u16(header_buf + 0x4, starting_pos);
 		inode_data_write(fd, fs, dir_inode, header_buf, sizeof(header_buf), 0);
 	}
 
@@ -470,6 +473,145 @@ void add_inode_to_dir(int fd, struct fsinfo_t *fs, uint32_t dir_inode_num, struc
 
 	// Update the directory inode
 	write_inode(fd, fs, dir_inode_num, dir_inode);
+}
+
+int remove_inode_from_dir(int fd, struct fsinfo_t *fs, struct inode_t *dir_inode, uint32_t entry_inode_num)
+{
+	uint32_t entries_count = 0;
+	uint16_t starting_pos = 0;
+	if (dir_inode->size > 0) {
+		uint8_t header_buf[6];
+		inode_data_read(fd, fs, dir_inode, header_buf, sizeof(header_buf), 0);
+		util_read_u32(header_buf, &entries_count);
+		util_read_u16(header_buf + 0x4, &starting_pos);
+	}
+
+	const uint32_t buffer_len = 512 + 10; // TODO
+	uint8_t buffer[buffer_len];
+	uint64_t pos = starting_pos + 0x6;
+
+	// Find entry_inode_num in directory
+	int entry_found = 0;
+	uint16_t cur_entry_len;
+	uint32_t buffer_pos = buffer_len;
+	uint32_t entry_index = 0;
+	for (; entry_index < entries_count; ++entry_index) {
+		if (buffer_pos + 0x6 >= buffer_len) {
+			inode_data_read(fd, fs, dir_inode, buffer, buffer_len, pos);
+			buffer_pos = 0;
+		}
+
+		uint32_t cur_inode_num;
+		util_read_u32(buffer + buffer_pos, &cur_inode_num);
+		util_read_u16(buffer + buffer_pos + 0x4, &cur_entry_len);
+
+		if (cur_inode_num == entry_inode_num) {
+			entry_found = 1;
+			break;
+		}
+
+		pos += cur_entry_len;
+		buffer_pos += cur_entry_len;
+	}
+
+	if (!entry_found)
+		return 0;
+
+	if (entries_count == 1) {
+		// If no more entries are left just empty the directory
+		resize_file(fd, fs, dir_inode, 0);
+
+	} else if (entry_index == entries_count - 1) {
+		// If we have to remove the last entry, just resize the directory
+		resize_file(fd, fs, dir_inode, pos);
+
+	} else {
+		uint16_t last_entry_len;
+		inode_data_read(fd, fs, dir_inode, buffer, 2, dir_inode->size - 2);
+		util_read_u16(buffer, &last_entry_len);
+
+		if (entry_index == 0) {
+			if (starting_pos + cur_entry_len >= last_entry_len) {
+				// Move the last entry to the begining
+
+				inode_data_read(fd, fs, dir_inode, buffer, last_entry_len,
+						dir_inode->size - last_entry_len);
+
+				// Extend the entry to fill the space to the next entry
+				uint16_t new_entry_len = starting_pos + cur_entry_len;
+				util_write_u16(buffer + 0x4, new_entry_len);
+				util_write_u16(buffer + last_entry_len - 0x2, new_entry_len);
+
+				inode_data_write(fd, fs, dir_inode, buffer, new_entry_len, 0x6);
+
+				// Resize the directory
+				resize_file(fd, fs, dir_inode, dir_inode->size - last_entry_len);
+
+				starting_pos = 0;
+
+			} else {
+				starting_pos += cur_entry_len;
+			}
+
+			// Update `starting_pos`
+			util_write_u16(buffer, starting_pos);
+			inode_data_write(fd, fs, dir_inode, buffer, 2, 0x4);
+
+		} else {
+			// Get the size of the previous entry
+			uint16_t prev_entry_len;
+			inode_data_read(fd, fs, dir_inode, buffer, 2, pos - 0x2);
+			util_read_u16(buffer, &prev_entry_len);
+
+			uint64_t prev_entry_pos = pos - prev_entry_len;
+			uint16_t prev_entry_name_len;
+			inode_data_read(fd, fs, dir_inode, buffer, 2, prev_entry_pos + 0x6);
+			util_read_u16(buffer, &prev_entry_name_len);
+
+			uint16_t prev_padding = prev_entry_len - prev_entry_name_len - 0x8;
+
+			if (prev_padding + cur_entry_len >= last_entry_len + 32) { // TODO: do we need that 32?
+				uint32_t in;
+				uint8_t bu[4];
+				inode_data_read(fd, fs, dir_inode, buffer, 4, dir_inode->size - last_entry_len);
+				util_read_u32(bu, &in);
+				// Move the last entry
+				inode_data_read(fd, fs, dir_inode, buffer, last_entry_len,
+						dir_inode->size - last_entry_len);
+				inode_data_write(fd, fs, dir_inode, buffer, last_entry_len,
+						pos + cur_entry_len - last_entry_len);
+
+				// Resize the directory
+				resize_file(fd, fs, dir_inode, dir_inode->size - last_entry_len);
+
+				// Extend the previous entry
+				uint16_t new_len = prev_entry_len + cur_entry_len - last_entry_len;
+				util_write_u16(buffer, new_len);
+				inode_data_write(fd, fs, dir_inode, buffer, 2, prev_entry_pos + 0x4);
+				inode_data_write(fd, fs, dir_inode, buffer, 2, prev_entry_pos + new_len - 0x2);
+
+			} else {
+				// Extend the previous entry
+				uint16_t new_len = prev_entry_len + cur_entry_len;
+				util_write_u16(buffer, new_len);
+				inode_data_write(fd, fs, dir_inode, buffer, 2, prev_entry_pos + 0x4);
+				inode_data_write(fd, fs, dir_inode, buffer, 2, prev_entry_pos + new_len - 0x2);
+			}
+		}
+	}
+
+	// Update `entries_count`
+	if (dir_inode->size > 0) {
+		util_write_u32(buffer, entries_count - 1);
+		inode_data_write(fd, fs, dir_inode, buffer, 4, 0);
+	}
+
+	// TODO: remove the inode if hard_links == 0
+	struct inode_t entry_inode;
+	read_inode(fd, fs, entry_inode_num, &entry_inode);
+	remove_file(fd, fs, entry_inode_num, &entry_inode);
+
+	return 1;
 }
 
 void write_root_directory(int fd, struct fsinfo_t *fs)
@@ -481,7 +623,7 @@ void write_root_directory(int fd, struct fsinfo_t *fs)
 	write_inode(fd, fs, 0, &root_inode);
 }
 
-int get_path_inode(int fd, struct fsinfo_t *fs, const char *path, uint32_t *inode_num, struct inode_t *inode)
+int get_path_inode(int fd, struct fsinfo_t *fs, const char *path, uint32_t *inode_num, struct inode_t *inode, uint32_t *dir_inode_num, struct inode_t *dir_inode)
 {
 	if (path[0] != '/')
 		return 0;
@@ -492,6 +634,8 @@ int get_path_inode(int fd, struct fsinfo_t *fs, const char *path, uint32_t *inod
 		return 1;
 	}
 
+	uint32_t prev_inode_num = 0;
+	struct inode_t prev_inode;
 	uint32_t cur_inode_num = 0;
 	struct inode_t cur_inode;
 	read_inode(fd, fs, cur_inode_num, &cur_inode);
@@ -502,15 +646,19 @@ int get_path_inode(int fd, struct fsinfo_t *fs, const char *path, uint32_t *inod
 		char c = path[fname_end];
 		if (c == '\0' || c == '/') {
 			// Search for a file named `path[fname_begin:fname_end]` in the current inode
+			prev_inode_num = cur_inode_num;
+			prev_inode = cur_inode;
 			uint8_t buffer[fs->main_block.block_size]; // TODO: malloc or something
 			uint64_t s = inode_data_read(fd, fs, &cur_inode, buffer, sizeof(buffer), 0);
 			if (s == 0)
 				return 0;
-			uint64_t pos = 4;
 			uint32_t inodes_count;
+			uint16_t starting_pos;
 			util_read_u32(buffer, &inodes_count);
-			int inode_found = 0;
+			util_read_u16(buffer + 0x4, &starting_pos);
 
+			uint64_t pos = starting_pos + 0x6;
+			int inode_found = 0;
 			for (uint32_t i = 0; i < inodes_count; ++i) {
 				uint16_t entry_len;
 				uint16_t name_len;
@@ -538,6 +686,12 @@ int get_path_inode(int fd, struct fsinfo_t *fs, const char *path, uint32_t *inod
 		}
 	}
 
+	if (inode_num != 0) {
+		if (dir_inode_num)
+			*dir_inode_num = prev_inode_num;
+		if (dir_inode)
+			*dir_inode = prev_inode;
+	}
 	*inode_num = cur_inode_num;
 	*inode = cur_inode;
 	return 1;
@@ -748,4 +902,14 @@ void resize_file(int fd, struct fsinfo_t *fs, struct inode_t *inode, uint64_t si
 
 	inode->size = size;
 	inode->blocks = new_blocks;
+}
+
+void remove_file(int fd, struct fsinfo_t *fs, uint32_t inode_num, struct inode_t *inode)
+{
+	// TODO: expect hard_links == 0
+
+	// This should free up all blocks
+	resize_file(fd, fs, inode, 0);
+
+	set_inode_state(fd, fs, inode_num, 0);
 }
