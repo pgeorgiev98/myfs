@@ -113,10 +113,11 @@ static void test_inode_create(void)
 			.ctime = i + 10,
 			.mtime = i + 10,
 			.size = 0,
-			.blocks = 0,
 			.uid = i,
 			.gid = i * 10,
 			.mode = i % 2,
+			.nlinks = 0,
+			.blocks = 0,
 		};
 		inodes[i] = in;
 		uint32_t inode_num;
@@ -241,28 +242,28 @@ static void test_get_path(void)
 	write_blank_fs(fd, &fs);
 	struct inode_t root_inode;
 	read_inode(fd, &fs, 0, &root_inode);
+	struct inode_t inode[10];
 
-	for (int i = 1; i <= 10; ++i) {
-		struct inode_t inode;
-		initialize_inode(&inode);
+	for (int i = 0; i < 10; ++i) {
+		initialize_inode(&inode[i]);
 		uint32_t inode_num;
-		create_inode(fd, &fs, &inode, &inode_num);
-		EXPECT_EQUAL(inode_num, i);
+		create_inode(fd, &fs, &inode[i], &inode_num);
+		EXPECT_EQUAL(inode_num, i + 1);
 	}
-	for (int i = 1; i <= 10; ++i) {
+	for (int i = 0; i < 10; ++i) {
 		char name[64];
 		strcpy(name, "file-");
 		sprintf(name + 5, "%d", i);
-		add_inode_to_dir(fd, &fs, 0, &root_inode, i, name);
+		add_inode_to_dir(fd, &fs, 0, &root_inode, i + 1, &inode[i], name);
 	}
-	for (int i = 1; i <= 10; ++i) {
+	for (int i = 0; i < 10; ++i) {
 		char path[64];
 		strcpy(path, "/file-");
 		sprintf(path + 6, "%d", i);
 		uint32_t inode_num;
 		struct inode_t inode;
-		EXPECT_S(get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL), "Failed to get inode for path %s", path);
-		EXPECT_S(inode_num == i, "Wrong inode number for %s, expected %d, actual %d", path, i, inode_num);
+		EXPECT_S(get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL, NULL), "Failed to get inode for path %s", path);
+		EXPECT_S(inode_num == i + 1, "Wrong inode number for %s, expected %d, actual %d", path, i + 1, inode_num);
 	}
 }
 
@@ -271,18 +272,18 @@ static void test_remove_files(int file_count, int *remove_order)
 	write_blank_fs(fd, &fs);
 	struct inode_t root_inode;
 	read_inode(fd, &fs, 0, &root_inode);
+	struct inode_t inode[file_count];
 
 	for (int i = 0; i < file_count; ++i) {
-		struct inode_t inode;
-		initialize_inode(&inode);
+		initialize_inode(&inode[i]);
 		uint32_t inode_num;
-		create_inode(fd, &fs, &inode, &inode_num);
+		create_inode(fd, &fs, &inode[i], &inode_num);
 		EXPECT_EQUAL(inode_num, i + 1);
 
 		char name[64];
 		strcpy(name, "file-");
 		sprintf(name + 5, "%d", i);
-		add_inode_to_dir(fd, &fs, 0, &root_inode, inode_num, name);
+		add_inode_to_dir(fd, &fs, 0, &root_inode, inode_num, &inode[i], name);
 	}
 	write_inode(fd, &fs, 0, &root_inode);
 
@@ -292,7 +293,7 @@ static void test_remove_files(int file_count, int *remove_order)
 
 	for (int j = 0; j < file_count; ++j) {
 		uint32_t removed = remove_order[j];
-		EXPECT_EQUAL(file_exists[removed], remove_inode_from_dir(fd, &fs, &root_inode, removed + 1));
+		EXPECT_EQUAL(file_exists[removed], remove_inode_from_dir(fd, &fs, &root_inode, removed + 1, &inode[removed]));
 		write_inode(fd, &fs, 0, &root_inode);
 		file_exists[removed] = 0;
 
@@ -303,13 +304,59 @@ static void test_remove_files(int file_count, int *remove_order)
 			uint32_t inode_num;
 			struct inode_t inode;
 			if (file_exists[i]) {
-				EXPECT_S(get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL), "Failed to get inode for path %s", path);
+				EXPECT_S(get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL, NULL), "Failed to get inode for path %s", path);
 				EXPECT_EQUAL(inode_num, i + 1);
 			} else {
-				EXPECT_S(!get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL), "File %s exists, but it should've been removed", path);
+				EXPECT_S(!get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL, NULL), "File %s exists, but it should've been removed", path);
 			}
 		}
 	}
+}
+
+static void test_hard_links(void)
+{
+	write_blank_fs(fd, &fs);
+	struct inode_t root_inode;
+	read_inode(fd, &fs, 0, &root_inode);
+
+	uint32_t n1, n2, n3;
+	struct inode_t i1, i2, i3;
+	const struct inode_t i = {
+		.ctime = 0,
+		.mtime = 0,
+		.size = 0,
+		.uid = 0,
+		.gid = 0,
+		.mode = 0,
+		.nlinks = 0,
+		.blocks = 0,
+	};
+	i1 = i2 = i3 = i;
+	create_inode(fd, &fs, &i1, &n1);
+	create_inode(fd, &fs, &i2, &n2);
+	create_inode(fd, &fs, &i3, &n3);
+	add_inode_to_dir(fd, &fs, 0, &root_inode, n1, &i1, "a");
+	add_inode_to_dir(fd, &fs, 0, &root_inode, n2, &i2, "b");
+	add_inode_to_dir(fd, &fs, 0, &root_inode, n3, &i3, "c");
+
+	uint32_t inode_num;
+	struct inode_t inode;
+	create_inode(fd, &fs, &inode, &inode_num);
+	add_inode_to_dir(fd, &fs, n1, &i1, inode_num, &inode, "f1");
+	add_inode_to_dir(fd, &fs, n2, &i2, inode_num, &inode, "f2");
+	add_inode_to_dir(fd, &fs, n3, &i3, inode_num, &inode, "f3");
+
+	EXPECT(remove_inode_from_dir(fd, &fs, &i1, inode_num, &inode));
+	EXPECT(!remove_inode_from_dir(fd, &fs, &i1, inode_num, &inode));
+
+	EXPECT(remove_inode_from_dir(fd, &fs, &i2, inode_num, &inode));
+	EXPECT(!remove_inode_from_dir(fd, &fs, &i2, inode_num, &inode));
+
+	EXPECT(remove_inode_from_dir(fd, &fs, &i3, inode_num, &inode));
+	EXPECT(!remove_inode_from_dir(fd, &fs, &i3, inode_num, &inode));
+
+	EXPECT(inode.nlinks == 0);
+	EXPECT(get_inode_state(fd, &fs, inode_num) == 0);
 }
 
 int main(int argc, char **argv)
@@ -388,6 +435,9 @@ int main(int argc, char **argv)
 		int order[10] = {9, 8, 7, 6, 5, 4, 3, 2, 1, 0};
 		test_remove_files(10, order);
 	}
+
+	printf("=== Test hard links ===\n");
+	test_hard_links();
 
 	close(fd);
 

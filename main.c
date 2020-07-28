@@ -1,5 +1,6 @@
 #define FUSE_USE_VERSION 31
 
+#define _GNU_SOURCE
 #define _XOPEN_SOURCE 500
 
 #include "myfs.h"
@@ -15,6 +16,7 @@
 #include <stddef.h>
 #include <assert.h>
 #include <sys/stat.h>
+#include <fcntl.h>
 
 static FILE *log = NULL;
 
@@ -68,7 +70,7 @@ static int myfs_getattr(const char *path, struct stat *stbuf,
 
 	uint32_t inode_num;
 	struct inode_t inode;
-	if (get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL)) {
+	if (get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL, NULL)) {
 		mode_t mode = (inode.mode & mode_mask);
 		if ((inode.mode & mode_ftype_mask) == mode_ftype_dir)
 			mode |= S_IFDIR;
@@ -93,7 +95,7 @@ static int myfs_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 	if (!strcmp(path, "/")) {
 		inode_num = 0;
 		read_inode(fd, &fs, inode_num, &inode);
-	} else if (!get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL)) {
+	} else if (!get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL, NULL)) {
 		return -ENOENT;
 	}
 
@@ -112,7 +114,7 @@ static int myfs_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_i
 	if (!strcmp(path, "/")) {
 		inode_num = 0;
 		read_inode(fd, &fs, inode_num, &inode);
-	} else if (!get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL)) {
+	} else if (!get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL, NULL)) {
 		return -ENOENT;
 	}
 
@@ -132,7 +134,7 @@ static int myfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 
 	uint32_t cur_inode_num;
 	struct inode_t cur_inode;
-	if (!get_path_inode(fd, &fs, path, &cur_inode_num, &cur_inode, NULL, NULL))
+	if (!get_path_inode(fd, &fs, path, &cur_inode_num, &cur_inode, NULL, NULL, NULL))
 		return -ENOENT;
 
 	uint8_t buffer[fs.main_block.block_size];
@@ -167,7 +169,7 @@ static int myfs_open(const char *path, struct fuse_file_info *fi)
 {
 	uint32_t inode_num;
 	struct inode_t inode;
-	if (!get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL))
+	if (!get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL, NULL))
 		return -ENOENT;
 
 	return 0;
@@ -178,7 +180,7 @@ static int myfs_read(const char *path, char *buf, size_t size, off_t offset,
 {
 	uint32_t inode_num;
 	struct inode_t inode;
-	if (!get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL))
+	if (!get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL, NULL))
 		return -ENOENT;
 
 	return inode_data_read(fd, &fs, &inode, (uint8_t *)buf, size, offset);
@@ -189,7 +191,7 @@ static int myfs_write(const char *path, const char *buf, size_t size, off_t offs
 {
 	uint32_t inode_num;
 	struct inode_t inode;
-	if (!get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL))
+	if (!get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL, NULL))
 		return -ENOENT;
 
 	uint64_t bytes_written = inode_data_write(fd, &fs, &inode, (uint8_t *)buf, size, offset);
@@ -215,7 +217,7 @@ static int myfs_mknod(const char *path, mode_t mode, dev_t dev)
 		char parent_path[i + 1];
 		strncpy(parent_path, path, i);
 		parent_path[i] = '\0';
-		if (!get_path_inode(fd, &fs, parent_path, &parent_inode_num, &parent_inode, NULL, NULL))
+		if (!get_path_inode(fd, &fs, parent_path, &parent_inode_num, &parent_inode, NULL, NULL, NULL))
 			return -ENOENT;
 		if ((parent_inode.mode & mode_ftype_mask) != mode_ftype_dir)
 			return -ENOTDIR;
@@ -235,7 +237,7 @@ static int myfs_mknod(const char *path, mode_t mode, dev_t dev)
 	};
 	uint32_t inode_num;
 	create_inode(fd, &fs, &inode, &inode_num);
-	add_inode_to_dir(fd, &fs, parent_inode_num, &parent_inode, inode_num, filename);
+	add_inode_to_dir(fd, &fs, parent_inode_num, &parent_inode, inode_num, &inode, filename);
 	return 0;
 }
 
@@ -257,7 +259,7 @@ static int myfs_mkdir(const char *path, mode_t mode)
 		char parent_path[i + 1];
 		strncpy(parent_path, path, i);
 		parent_path[i] = '\0';
-		if (!get_path_inode(fd, &fs, parent_path, &parent_inode_num, &parent_inode, NULL, NULL))
+		if (!get_path_inode(fd, &fs, parent_path, &parent_inode_num, &parent_inode, NULL, NULL, NULL))
 			return -ENOENT;
 		if ((parent_inode.mode & mode_ftype_mask) != mode_ftype_dir)
 			return -ENOTDIR;
@@ -270,14 +272,15 @@ static int myfs_mkdir(const char *path, mode_t mode)
 		.ctime = 0,
 		.mtime = 0,
 		.size = 0,
-		.blocks = 0,
 		.uid = context->uid,
 		.gid = context->gid,
 		.mode = (mode & 0777) | mode_ftype_dir,
+		.nlinks = 0,
+		.blocks = 0,
 	};
 	uint32_t inode_num;
 	create_inode(fd, &fs, &inode, &inode_num);
-	add_inode_to_dir(fd, &fs, parent_inode_num, &parent_inode, inode_num, filename);
+	add_inode_to_dir(fd, &fs, parent_inode_num, &parent_inode, inode_num, &inode, filename);
 
 	return 0;
 }
@@ -286,7 +289,7 @@ static int myfs_truncate(const char *path, off_t size, struct fuse_file_info *fi
 {
 	uint32_t inode_num;
 	struct inode_t inode;
-	if (!get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL))
+	if (!get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL, NULL))
 		return -ENOENT;
 
 	if ((inode.mode & mode_ftype_mask) == mode_ftype_dir)
@@ -302,13 +305,13 @@ static int myfs_unlink(const char *path)
 {
 	uint32_t inode_num, dir_inode_num;
 	struct inode_t inode, dir_inode;
-	if (!get_path_inode(fd, &fs, path, &inode_num, &inode, &dir_inode_num, &dir_inode))
+	if (!get_path_inode(fd, &fs, path, &inode_num, &inode, &dir_inode_num, &dir_inode, NULL))
 		return -ENOENT;
 
 	if ((inode.mode & mode_ftype_mask) == mode_ftype_dir)
 		return -EISDIR;
 
-	remove_inode_from_dir(fd, &fs, &dir_inode, inode_num);
+	remove_inode_from_dir(fd, &fs, &dir_inode, inode_num, &inode);
 	write_inode(fd, &fs, dir_inode_num, &dir_inode);
 
 	return 0;
@@ -318,14 +321,62 @@ static int myfs_rmdir(const char *path)
 {
 	uint32_t inode_num, dir_inode_num;
 	struct inode_t inode, dir_inode;
-	if (!get_path_inode(fd, &fs, path, &inode_num, &inode, &dir_inode_num, &dir_inode))
+	if (!get_path_inode(fd, &fs, path, &inode_num, &inode, &dir_inode_num, &dir_inode, NULL))
 		return -ENOENT;
 
 	if ((inode.mode & mode_ftype_mask) == mode_ftype_file)
 		return -ENOTDIR;
 
-	remove_inode_from_dir(fd, &fs, &dir_inode, inode_num);
+	remove_inode_from_dir(fd, &fs, &dir_inode, inode_num, &inode);
 	write_inode(fd, &fs, dir_inode_num, &dir_inode);
+
+	return 0;
+}
+
+static int myfs_rename(const char *src, const char *dest, unsigned int flags)
+{
+	if (flags == RENAME_EXCHANGE) {
+		uint32_t src_inode_num, dest_inode_num;
+		struct inode_t src_inode, dest_inode;
+		uint64_t src_offset, dest_offset;
+		if (!get_path_inode(fd, &fs, src, &src_inode_num, &src_inode, NULL, NULL, &src_offset) ||
+				!get_path_inode(fd, &fs, dest, &dest_inode_num, &dest_inode, NULL, NULL, &dest_offset))
+			return -ENOENT;
+		uint8_t buf[4];
+		util_write_u32(buf, dest_inode_num);
+		inode_data_write(fd, &fs, &src_inode, buf, 4, src_offset);
+		util_write_u32(buf, src_inode_num);
+		inode_data_write(fd, &fs, &dest_inode, buf, 4, dest_offset);
+
+	} else {
+		uint32_t src_inode_num, src_dir_inode_num, dest_inode_num, dest_dir_inode_num;
+		struct inode_t src_inode, src_dir_inode, dest_inode, dest_dir_inode;
+
+		int src_len = strlen(src), dest_len = strlen(dest);
+		char src_dir[src_len + 1], dest_dir[src_len + 1];
+		char src_basename[513], dest_basename[513];
+		util_split_path(src, src_len, src_dir, src_basename);
+		util_split_path(dest, dest_len, dest_dir, dest_basename);
+
+		if (!get_path_inode(fd, &fs, src, &src_inode_num, &src_inode, &src_dir_inode_num, &src_dir_inode, NULL) ||
+				!get_path_inode(fd, &fs, dest_dir, &dest_dir_inode_num, &dest_dir_inode, NULL, NULL, NULL))
+			return -ENOENT;
+
+		int dest_exists = get_path_inode(fd, &fs, dest, &dest_inode_num, &dest_inode, NULL, NULL, NULL);
+		if (flags == RENAME_NOREPLACE && dest_exists)
+			return -EEXIST;
+
+		if (flags != RENAME_NOREPLACE && dest_exists) {
+			EXPECT(remove_inode_from_dir(fd, &fs, &dest_dir_inode, dest_inode_num, &dest_inode));
+			write_inode(fd, &fs, dest_dir_inode_num, &dest_dir_inode);
+		}
+
+		add_inode_to_dir(fd, &fs, dest_dir_inode_num, &dest_dir_inode, src_inode_num, &src_inode, dest_basename);
+		write_inode(fd, &fs, dest_dir_inode_num, &dest_dir_inode);
+		if (!remove_inode_from_dir(fd, &fs, &src_dir_inode, src_inode_num, &src_inode))
+			return -ENOENT;
+		write_inode(fd, &fs, src_dir_inode_num, &src_dir_inode);
+	}
 
 	return 0;
 }
@@ -344,6 +395,7 @@ static const struct fuse_operations myfs_oper = {
 	.truncate   = myfs_truncate,
 	.unlink     = myfs_unlink,
 	.rmdir      = myfs_rmdir,
+	.rename     = myfs_rename,
 };
 
 int main(int argc, char *argv[])

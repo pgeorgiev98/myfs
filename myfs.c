@@ -63,10 +63,11 @@ void initialize_inode(struct inode_t *inode)
 		.ctime = 0,
 		.mtime = 0,
 		.size = 0,
-		.blocks = 0,
 		.uid = 0,
 		.gid = 0,
 		.mode = 0,
+		.nlinks = 0,
+		.blocks = 0,
 	};
 
 	*inode = i;
@@ -104,6 +105,7 @@ void write_inode(int fd, const struct fsinfo_t *fs, uint32_t inode_num, const st
 	util_writeseq_u32(&b, inode->uid);
 	util_writeseq_u32(&b, inode->gid);
 	util_writeseq_u16(&b, inode->mode);
+	util_writeseq_u16(&b, inode->nlinks);
 
 	lseek(fd, pos, SEEK_SET);
 	write(fd, buffer, INODE_SIZE);
@@ -146,6 +148,7 @@ void read_inode(int fd, const struct fsinfo_t *fs, uint32_t inode_num, struct in
 	util_readseq_u32(&b, &inode->uid);
 	util_readseq_u32(&b, &inode->gid);
 	util_readseq_u16(&b, &inode->mode);
+	util_readseq_u16(&b, &inode->nlinks);
 }
 
 void write_blank_data_bitmap(int fd, const struct fsinfo_t *fs)
@@ -438,7 +441,7 @@ uint64_t inode_data_read(int fd, struct fsinfo_t *fs, struct inode_t *inode, uin
 	return len;
 }
 
-void add_inode_to_dir(int fd, struct fsinfo_t *fs, uint32_t dir_inode_num, struct inode_t *dir_inode, uint32_t entry_inode, const char *entry_name)
+void add_inode_to_dir(int fd, struct fsinfo_t *fs, uint32_t dir_inode_num, struct inode_t *dir_inode, uint32_t entry_inode_num, struct inode_t *entry_inode, const char *entry_name)
 {
 	uint32_t entries_count = 0;
 	uint16_t starting_pos = 0;
@@ -454,7 +457,7 @@ void add_inode_to_dir(int fd, struct fsinfo_t *fs, uint32_t dir_inode_num, struc
 	uint16_t entry_len = name_len + padding + 10;
 
 	uint8_t buffer[512 + 10]; // TODO
-	util_write_u32(buffer + 0x0, entry_inode);
+	util_write_u32(buffer + 0x0, entry_inode_num);
 	util_write_u16(buffer + 0x4, entry_len);
 	util_write_u16(buffer + entry_len - 0x2, entry_len);
 	util_write_u16(buffer + 0x6, name_len);
@@ -473,9 +476,12 @@ void add_inode_to_dir(int fd, struct fsinfo_t *fs, uint32_t dir_inode_num, struc
 
 	// Update the directory inode
 	write_inode(fd, fs, dir_inode_num, dir_inode);
+
+	++entry_inode->nlinks;
+	write_inode(fd, fs, entry_inode_num, entry_inode);
 }
 
-int remove_inode_from_dir(int fd, struct fsinfo_t *fs, struct inode_t *dir_inode, uint32_t entry_inode_num)
+int remove_inode_from_dir(int fd, struct fsinfo_t *fs, struct inode_t *dir_inode, uint32_t entry_inode_num, struct inode_t *entry_inode)
 {
 	uint32_t entries_count = 0;
 	uint16_t starting_pos = 0;
@@ -606,10 +612,11 @@ int remove_inode_from_dir(int fd, struct fsinfo_t *fs, struct inode_t *dir_inode
 		inode_data_write(fd, fs, dir_inode, buffer, 4, 0);
 	}
 
-	// TODO: remove the inode if hard_links == 0
-	struct inode_t entry_inode;
-	read_inode(fd, fs, entry_inode_num, &entry_inode);
-	remove_file(fd, fs, entry_inode_num, &entry_inode);
+	// Remove the file if no more hard links remain
+	if (--entry_inode->nlinks == 0)
+		remove_file(fd, fs, entry_inode_num, entry_inode);
+	else
+		write_inode(fd, fs, entry_inode_num, entry_inode);
 
 	return 1;
 }
@@ -623,7 +630,7 @@ void write_root_directory(int fd, struct fsinfo_t *fs)
 	write_inode(fd, fs, 0, &root_inode);
 }
 
-int get_path_inode(int fd, struct fsinfo_t *fs, const char *path, uint32_t *inode_num, struct inode_t *inode, uint32_t *dir_inode_num, struct inode_t *dir_inode)
+int get_path_inode(int fd, struct fsinfo_t *fs, const char *path, uint32_t *inode_num, struct inode_t *inode, uint32_t *dir_inode_num, struct inode_t *dir_inode, uint64_t *offset)
 {
 	if (path[0] != '/')
 		return 0;
@@ -670,6 +677,8 @@ int get_path_inode(int fd, struct fsinfo_t *fs, const char *path, uint32_t *inod
 				if (name_len == fname_end - fname_begin &&
 						strncmp((const char *)(buffer + pos + 0x8), path + fname_begin, name_len) == 0) {
 					read_inode(fd, fs, cur_inode_num, &cur_inode);
+					if (offset)
+						*offset = pos;
 					inode_found = 1;
 					break;
 				}
@@ -906,7 +915,7 @@ void resize_file(int fd, struct fsinfo_t *fs, struct inode_t *inode, uint64_t si
 
 void remove_file(int fd, struct fsinfo_t *fs, uint32_t inode_num, struct inode_t *inode)
 {
-	// TODO: expect hard_links == 0
+	EXPECT(inode->nlinks == 0);
 
 	// This should free up all blocks
 	resize_file(fd, fs, inode, 0);

@@ -1,6 +1,8 @@
 #ifndef UTIL_H_INCLUDED
 #define UTIL_H_INCLUDED
 
+#include <string.h>
+
 // ceil(A/B)
 #define CEIL_DIV(A, B) ((A)/(B) + ((A)%(B) != 0))
 
@@ -71,6 +73,20 @@ static inline void util_readseq_u64(uint8_t **in, uint64_t *v)
 {
 	util_read_u64(*in, v);
 	*in += sizeof(*v);
+}
+
+static inline void util_split_path(const char *path, int len, char *parent_path, char *basename)
+{
+	int last_index;
+	for (last_index = len - 1; last_index > 0; --last_index)
+		if (path[last_index] == '/')
+			break;
+	memcpy(parent_path, path, last_index);
+	parent_path[last_index] = '\0';
+
+	int b_len = len - last_index - 1;
+	memcpy(basename, path + last_index + 1, b_len);
+	basename[b_len] = '\0';
 }
 
 #endif

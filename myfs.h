@@ -23,7 +23,7 @@
  */
 
 #define MAIN_BLOCK_SIZE 22
-#define INODE_SIZE 98
+#define INODE_SIZE 100
 
 enum {
 	mode_mask       = 0777,
@@ -73,6 +73,7 @@ struct inode_t
 	uint32_t uid;      /* User ID */
 	uint32_t gid;      /* Group ID */
 	uint16_t mode;     /* File mode (lower 9 bits) and type (upper 7 bits) */
+	uint16_t nlinks;   /* Number of hard-links */
 	uint32_t blocks;   /* Number of allocated blocks */
 	uint32_t blockpos[INODE_BLKS]; /* data block IDs */
 };
@@ -104,12 +105,12 @@ void resize_file(int fd, struct fsinfo_t *fs, struct inode_t *inode, uint64_t si
 
 void remove_file(int fd, struct fsinfo_t *fs, uint32_t inode_num, struct inode_t *inode);
 
-void add_inode_to_dir(int fd, struct fsinfo_t *fs, uint32_t dir_inode_num, struct inode_t *dir_inode, uint32_t entry_inode_num, const char *entry_name);
-int remove_inode_from_dir(int fd, struct fsinfo_t *fs, struct inode_t *dir_inode, uint32_t entry_inode_num);
+void add_inode_to_dir(int fd, struct fsinfo_t *fs, uint32_t dir_inode_num, struct inode_t *dir_inode, uint32_t entry_inode_num, struct inode_t *entry_inode, const char *entry_name);
+int remove_inode_from_dir(int fd, struct fsinfo_t *fs, struct inode_t *dir_inode, uint32_t entry_inode_num, struct inode_t *entry_inode);
 
 void write_root_directory(int fd, struct fsinfo_t *fs);
 
 int get_path_inode(int fd, struct fsinfo_t *fs, const char *path, uint32_t *inode_num, struct inode_t *inode,
-		uint32_t *dir_inode_num, struct inode_t *dir_inode);
+		uint32_t *dir_inode_num, struct inode_t *dir_inode, uint64_t *offset);
 
 #endif
