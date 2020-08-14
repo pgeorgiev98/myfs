@@ -25,6 +25,8 @@
 #define MAIN_BLOCK_SIZE 22
 #define INODE_SIZE 100
 
+#define MAX_FILE_NAME_LENGTH 512
+
 enum {
 	mode_mask       = 0777,
 	mode_ftype_mask = 1 << 9,

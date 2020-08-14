@@ -147,15 +147,35 @@ static int myfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	util_read_u32(buffer, &inodes_count);
 	util_read_u16(buffer + 0x4, &starting_pos);
 
+	uint64_t file_pos = 0;
 	uint64_t pos = starting_pos + 0x6;
 	for (uint32_t i = 0; i < inodes_count; ++i) {
 		uint16_t name_len;
 		uint16_t entry_len;
-		EXPECT(pos + 8 <= s);
+
+		EXPECT(pos < s); // TODO: Error handling
+
+		// Load next page if we're at the end of the buffer
+		if (pos + 8 > s) {
+			file_pos += pos;
+			pos = 0;
+			s = inode_data_read(fd, &fs, &cur_inode, buffer, sizeof(buffer), file_pos);
+		}
+
+		// Read entry header
 		util_read_u16(buffer + pos + 0x4, &entry_len);
 		util_read_u16(buffer + pos + 0x6, &name_len);
+		EXPECT(name_len <= MAX_FILE_NAME_LENGTH); // TODO: error handling
+
+		// Load next page if we're at the end of the buffer
+		if (pos + 8 + name_len > s) {
+			file_pos += pos;
+			pos = 0;
+			s = inode_data_read(fd, &fs, &cur_inode, buffer, sizeof(buffer), file_pos);
+		}
 		EXPECT(pos + 8 + name_len <= s);
-		char name[513]; // TODO
+
+		char name[MAX_FILE_NAME_LENGTH + 1];
 		memcpy(name, buffer + pos + 0x8, name_len);
 		name[name_len] = '\0';
 		filler(buf, name, NULL, 0, 0);
