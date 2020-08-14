@@ -3,6 +3,12 @@ if get_option('buildtype').startswith('debug')
   add_project_arguments('-DDEBUG', language : 'c')
 endif
 
+if host_machine.endian() == 'little'
+  add_project_arguments('-DLITTLE_ENDIAN=1', language : 'c')
+else
+  add_project_arguments('-DLITTLE_ENDIAN=0', language : 'c')
+endif
+
 fusedep = dependency('fuse3')
 
 executable('mkfs.myfs', 'myfs.c', 'mkfs.c', 'helpers.c')

@@ -6,6 +6,8 @@
 // ceil(A/B)
 #define CEIL_DIV(A, B) ((A)/(B) + ((A)%(B) != 0))
 
+#if LITTLE_ENDIAN == 1
+
 static inline void util_write_u16(uint8_t *out, uint16_t v)
 {
 	*(uint16_t *)out = v;
@@ -36,6 +38,46 @@ static inline void util_read_u64(const uint8_t *in, uint64_t *v)
 {
 	*v = *(const uint64_t *)in;
 }
+
+#else
+
+#include <byteswap.h>
+
+static inline void util_write_u16(uint8_t *out, uint16_t v)
+{
+	*(uint16_t *)out = bswap_16(v);
+}
+
+static inline void util_write_u32(uint8_t *out, uint32_t v)
+{
+	*(uint32_t *)out = bswap_32(v);
+}
+
+static inline void util_write_u64(uint8_t *out, uint64_t v)
+{
+	*(uint64_t *)out = bswap_64(v);
+}
+
+
+static inline void util_read_u16(const uint8_t *in, uint16_t *v)
+{
+	uint16_t t = *(const uint16_t *)in;
+	*v = bswap_16(t);
+}
+
+static inline void util_read_u32(const uint8_t *in, uint32_t *v)
+{
+	uint32_t t = *(const uint32_t *)in;
+	*v = bswap_32(t);
+}
+
+static inline void util_read_u64(const uint8_t *in, uint64_t *v)
+{
+	uint64_t t = *(const uint64_t *)in;
+	*v = bswap_64(t);
+}
+
+#endif
 
 
 static inline void util_writeseq_u16(uint8_t **out, uint16_t v)
