@@ -7,6 +7,6 @@ fusedep = dependency('fuse3')
 
 executable('mkfs.myfs', 'myfs.c', 'mkfs.c', 'helpers.c')
 executable('fsinfo', 'myfs.c', 'fsinfo.c', 'helpers.c')
-executable('myfs', 'myfs.c', 'main.c', 'helpers.c', dependencies : fusedep)
+executable('myfs', 'myfs.c', 'main.c', 'helpers.c', 'inode_map.c', dependencies : fusedep)
 
 executable('fstest', 'myfs.c', 'test.c', 'helpers.c')

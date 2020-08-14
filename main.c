@@ -5,6 +5,7 @@
 
 #include "myfs.h"
 #include "util.h"
+#include "inode_map.h"
 #include "asserts.h"
 
 #include <fuse.h>
@@ -22,6 +23,9 @@ static FILE *log = NULL;
 
 static struct fsinfo_t fs;
 static int fd = -1;
+
+static struct inode_map_t inode_map;
+static uint32_t file_key_counter = 1;
 
 /*
  * Command line options
@@ -55,7 +59,14 @@ static void *myfs_init(struct fuse_conn_info *conn,
 
 	read_fsinfo(fd, &fs);
 
+	inode_map_initialize(&inode_map);
+
 	return NULL;
+}
+
+static void myfs_destroy(void *private_data)
+{
+	inode_map_destroy(&inode_map);
 }
 
 static int myfs_getattr(const char *path, struct stat *stbuf,
@@ -69,39 +80,45 @@ static int myfs_getattr(const char *path, struct stat *stbuf,
 	}
 
 	uint32_t inode_num;
-	struct inode_t inode;
-	if (get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL, NULL)) {
-		mode_t mode = (inode.mode & mode_mask);
-		if ((inode.mode & mode_ftype_mask) == mode_ftype_dir)
-			mode |= S_IFDIR;
-		else //if (inode.mode & mode_ftype_mask == mode_ftype_file)
-			mode |= S_IFREG;
-		stbuf->st_mode = mode;
-		stbuf->st_nlink = 1; // TODO
-		stbuf->st_size = inode.size;
-		stbuf->st_uid = inode.uid;
-		stbuf->st_gid = inode.gid;
-		return 0;
-	}
+	struct inode_t in;
+	struct inode_t *inode = &in;
 
-	return -ENOENT;
+	if (fi && fi->fh)
+		inode_map_get(&inode_map, fi->fh, &inode_num, &inode);
+	else if (!get_path_inode(fd, &fs, path, &inode_num, &in, NULL, NULL, NULL))
+		return -ENOENT;
+
+	mode_t mode = (inode->mode & mode_mask);
+	if ((inode->mode & mode_ftype_mask) == mode_ftype_dir)
+		mode |= S_IFDIR;
+	else //if (inode->mode & mode_ftype_mask == mode_ftype_file)
+		mode |= S_IFREG;
+	stbuf->st_mode = mode;
+	stbuf->st_nlink = 1; // TODO
+	stbuf->st_size = inode->size;
+	stbuf->st_uid = inode->uid;
+	stbuf->st_gid = inode->gid;
+	return 0;
 }
 
 static int myfs_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
 	uint32_t inode_num;
-	struct inode_t inode;
+	struct inode_t in;
+	struct inode_t *inode = &in;
 
 	if (!strcmp(path, "/")) {
 		inode_num = 0;
-		read_inode(fd, &fs, inode_num, &inode);
-	} else if (!get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL, NULL)) {
+		read_inode(fd, &fs, inode_num, &in);
+	} else if (fi && fi->fh) {
+		inode_map_get(&inode_map, fi->fh, &inode_num, &inode);
+	} else if (!get_path_inode(fd, &fs, path, &inode_num, &in, NULL, NULL, NULL)) {
 		return -ENOENT;
 	}
 
-	inode.mode &= ~0777;
-	inode.mode |= mode & 0777;
-	write_inode(fd, &fs, inode_num, &inode);
+	inode->mode &= ~0777;
+	inode->mode |= mode & 0777;
+	write_inode(fd, &fs, inode_num, inode);
 
 	return 0;
 }
@@ -109,18 +126,21 @@ static int myfs_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 static int myfs_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi)
 {
 	uint32_t inode_num;
-	struct inode_t inode;
+	struct inode_t in;
+	struct inode_t *inode = &in;
 
 	if (!strcmp(path, "/")) {
 		inode_num = 0;
-		read_inode(fd, &fs, inode_num, &inode);
-	} else if (!get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL, NULL)) {
+		read_inode(fd, &fs, inode_num, &in);
+	} else if (fi && fi->fh) {
+		inode_map_get(&inode_map, fi->fh, &inode_num, &inode);
+	} else if (!get_path_inode(fd, &fs, path, &inode_num, &in, NULL, NULL, NULL)) {
 		return -ENOENT;
 	}
 
-	inode.uid = uid;
-	inode.gid = gid;
-	write_inode(fd, &fs, inode_num, &inode);
+	inode->uid = uid;
+	inode->gid = gid;
+	write_inode(fd, &fs, inode_num, inode);
 
 	return 0;
 }
@@ -189,33 +209,53 @@ static int myfs_open(const char *path, struct fuse_file_info *fi)
 {
 	uint32_t inode_num;
 	struct inode_t inode;
-	if (!get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL, NULL))
-		return -ENOENT;
+	if (fi && !fi->fh) {
+		if (!get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL, NULL))
+			return -ENOENT;
+		fi->fh = file_key_counter;
+		inode_map_insert(&inode_map, file_key_counter, inode_num, &inode);
+		++file_key_counter;
+	}
 
 	return 0;
+}
+
+static int myfs_release(const char *path, struct fuse_file_info *fi)
+{
+	if (fi && fi->fh) {
+		inode_map_remove(&inode_map, fi->fh);
+		return 0;
+	}
+	return 0; // TODO: What error to return?
 }
 
 static int myfs_read(const char *path, char *buf, size_t size, off_t offset,
 		      struct fuse_file_info *fi)
 {
 	uint32_t inode_num;
-	struct inode_t inode;
-	if (!get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL, NULL))
+	struct inode_t in;
+	struct inode_t *inode = &in;
+	if (fi && fi->fh)
+		inode_map_get(&inode_map, fi->fh, &inode_num, &inode);
+	else if (!get_path_inode(fd, &fs, path, &inode_num, &in, NULL, NULL, NULL))
 		return -ENOENT;
 
-	return inode_data_read(fd, &fs, &inode, (uint8_t *)buf, size, offset);
+	return inode_data_read(fd, &fs, inode, (uint8_t *)buf, size, offset);
 }
 
 static int myfs_write(const char *path, const char *buf, size_t size, off_t offset,
 		struct fuse_file_info *fi)
 {
 	uint32_t inode_num;
-	struct inode_t inode;
-	if (!get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL, NULL))
+	struct inode_t in;
+	struct inode_t *inode = &in;
+	if (fi && fi->fh)
+		inode_map_get(&inode_map, fi->fh, &inode_num, &inode);
+	else if (!get_path_inode(fd, &fs, path, &inode_num, &in, NULL, NULL, NULL))
 		return -ENOENT;
 
-	uint64_t bytes_written = inode_data_write(fd, &fs, &inode, (uint8_t *)buf, size, offset);
-	write_inode(fd, &fs, inode_num, &inode);
+	uint64_t bytes_written = inode_data_write(fd, &fs, inode, (uint8_t *)buf, size, offset);
+	write_inode(fd, &fs, inode_num, inode);
 	return bytes_written;
 }
 
@@ -308,15 +348,18 @@ static int myfs_mkdir(const char *path, mode_t mode)
 static int myfs_truncate(const char *path, off_t size, struct fuse_file_info *fi)
 {
 	uint32_t inode_num;
-	struct inode_t inode;
-	if (!get_path_inode(fd, &fs, path, &inode_num, &inode, NULL, NULL, NULL))
+	struct inode_t in;
+	struct inode_t *inode = &in;
+	if (fi && fi->fh)
+		inode_map_get(&inode_map, fi->fh, &inode_num, &inode);
+	else if (!get_path_inode(fd, &fs, path, &inode_num, &in, NULL, NULL, NULL))
 		return -ENOENT;
 
-	if ((inode.mode & mode_ftype_mask) == mode_ftype_dir)
+	if ((inode->mode & mode_ftype_mask) == mode_ftype_dir)
 		return -EISDIR;
 
-	resize_file(fd, &fs, &inode, size);
-	write_inode(fd, &fs, inode_num, &inode);
+	resize_file(fd, &fs, inode, size);
+	write_inode(fd, &fs, inode_num, inode);
 
 	return 0;
 }
@@ -403,11 +446,13 @@ static int myfs_rename(const char *src, const char *dest, unsigned int flags)
 
 static const struct fuse_operations myfs_oper = {
 	.init       = myfs_init,
+	.destroy    = myfs_destroy,
 	.getattr    = myfs_getattr,
 	.chmod      = myfs_chmod,
 	.chown      = myfs_chown,
 	.readdir    = myfs_readdir,
 	.open       = myfs_open,
+	.release    = myfs_release,
 	.read       = myfs_read,
 	.write      = myfs_write,
 	.mknod      = myfs_mknod,
