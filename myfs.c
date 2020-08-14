@@ -261,16 +261,50 @@ void set_inode_state(int fd, struct fsinfo_t *fs, uint32_t inode, uint8_t state)
  */
 static uint32_t allocate_blocks(int fd, struct fsinfo_t *fs, uint32_t block_count, uint32_t *out_blocks)
 {
-	// TODO: make this faster
-	uint32_t o = 0;
-	for (uint32_t i = 0; o < block_count && i < fs->main_block.data_block_count; ++i) {
-		if (!get_block_state(fd, fs, i)) {
-			out_blocks[o++] = i;
-			set_block_state(fd, fs, i, 1);
+	uint32_t allocated = 0;
+
+	const uint16_t bs = fs->main_block.block_size;
+	const uint64_t bitmap_pos = fs->data_blocks_bitmap_pos;
+	uint8_t buffer[bs];
+	uint64_t pos = bitmap_pos;
+	do {
+		// Load a page
+		lseek(fd, pos, SEEK_SET);
+		uint64_t s = read(fd, buffer, bs);
+
+		uint32_t first_updated = (uint32_t)(-1);
+		uint32_t last_updated = first_updated - 1;
+
+		// Traverse page
+		for (uint64_t i = 0; allocated < block_count && i < s; ++i) {
+			uint8_t b = buffer[i];
+			if (b != 0xFF) {
+				// Traverse byte
+				for (int j = 0; allocated < block_count && j < 8; ++j) {
+					if (!(b & (1 << j))) {
+						out_blocks[allocated++] = (pos - bitmap_pos + i) * 8 + j;
+						b |= (1 << j);
+					}
+				}
+				if (first_updated > last_updated)
+					first_updated = i;
+				last_updated = i;
+				buffer[i] = b;
+			}
 		}
-	}
-	fs->main_block.free_data_block_count -= o;
-	return o;
+
+		// Update bytes
+		if (first_updated <= last_updated) {
+			lseek(fd, pos + first_updated, SEEK_SET);
+			write(fd, buffer + first_updated, last_updated - first_updated + 1);
+		}
+
+		pos += s;
+	} while (allocated < block_count);
+
+	fs->main_block.free_data_block_count -= allocated;
+
+	return allocated;
 }
 
 static void release_blocks(int fd, struct fsinfo_t *fs, uint32_t *blocks, uint32_t block_count)
