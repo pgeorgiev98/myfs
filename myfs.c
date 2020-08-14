@@ -10,6 +10,9 @@
 #include <unistd.h>
 #include <string.h>
 
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+
 void initialize_fsinfo(struct fsinfo_t *fs, uint64_t size)
 {
 	const uint16_t block_size = 4096;
@@ -309,10 +312,36 @@ static uint32_t allocate_blocks(int fd, struct fsinfo_t *fs, uint32_t block_coun
 
 static void release_blocks(int fd, struct fsinfo_t *fs, uint32_t *blocks, uint32_t block_count)
 {
-	EXPECT(block_count + fs->main_block.free_data_block_count <= fs->main_block.data_block_count);
-	// TODO: make this faster
-	for (uint32_t i = 0; i < block_count; ++i)
-		set_block_state(fd, fs, blocks[i], 0);
+	if (block_count == 0)
+		return;
+
+	const uint16_t bs = fs->main_block.block_size;
+	const uint64_t bitmap_pos = fs->data_blocks_bitmap_pos;
+	uint8_t buffer[bs];
+	uint32_t left, right;
+	uint32_t released = 0;
+
+	while (released < block_count) {
+		left = right = (blocks[released] / 8);
+		uint32_t i;
+		for (i = released + 1; i < block_count; ++i) {
+			uint32_t loc = (blocks[i] / 8);
+			uint32_t new_left = MIN(left, loc);
+			uint32_t new_right = MAX(right, loc);
+			if (new_right - new_left + 1 > bs)
+				break;
+			left = new_left;
+			right = new_right;
+		}
+		lseek(fd, bitmap_pos + left, SEEK_SET);
+		read(fd, buffer, right - left + 1);
+		lseek(fd, bitmap_pos + left, SEEK_SET);
+		for (uint32_t j = released; j < i; ++j)
+			buffer[blocks[j] / 8 - left] &= ~(1 << (blocks[j] % 8));
+		write(fd, buffer, right - left + 1);
+		released = i;
+	}
+
 	fs->main_block.free_data_block_count += block_count;
 }
 
