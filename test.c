@@ -137,7 +137,7 @@ static void test_inode_create(void)
 static void test_inode_read_write1(void)
 {
 	struct inode_t in;
-	initialize_inode(&in);
+	clear_inode(&in);
 	uint32_t inode_num;
 	create_inode(fd, &fs, &in, &inode_num);
 	const char outbuf[] = "Hello, world!";
@@ -163,7 +163,7 @@ static void test_inode_read_write2(uint32_t file_count, uint32_t *file_sizes)
 	struct file files[file_count];
 	for (uint32_t i = 0; i < file_count; ++i) {
 		files[i].data = (uint8_t *)malloc(file_sizes[i]);
-		initialize_inode(&files[i].inode);
+		clear_inode(&files[i].inode);
 		create_inode(fd, &fs, &files[i].inode, &files[i].num);
 	}
 
@@ -211,7 +211,7 @@ static void test_inode_read_write_random(uint32_t fsize)
 	uint8_t *data = (uint8_t *)malloc(fsize);
 	for (uint32_t i = 0; i < fsize; ++i)
 		data[i] = i;
-	initialize_inode(&inode);
+	clear_inode(&inode);
 	create_inode(fd, &fs, &inode, &inode_num);
 	inode_data_write(fd, &fs, &inode, data, fsize, 0);
 	for (int i = 0; i < 100; ++i) {
@@ -245,7 +245,7 @@ static void test_get_path(void)
 	struct inode_t inode[10];
 
 	for (int i = 0; i < 10; ++i) {
-		initialize_inode(&inode[i]);
+		clear_inode(&inode[i]);
 		uint32_t inode_num;
 		create_inode(fd, &fs, &inode[i], &inode_num);
 		EXPECT_EQUAL(inode_num, i + 1);
@@ -275,7 +275,7 @@ static void test_remove_files(int file_count, int *remove_order)
 	struct inode_t inode[file_count];
 
 	for (int i = 0; i < file_count; ++i) {
-		initialize_inode(&inode[i]);
+		clear_inode(&inode[i]);
 		uint32_t inode_num;
 		create_inode(fd, &fs, &inode[i], &inode_num);
 		EXPECT_EQUAL(inode_num, i + 1);
@@ -321,17 +321,9 @@ static void test_hard_links(void)
 
 	uint32_t n1, n2, n3;
 	struct inode_t i1, i2, i3;
-	const struct inode_t i = {
-		.ctime = 0,
-		.mtime = 0,
-		.size = 0,
-		.uid = 0,
-		.gid = 0,
-		.mode = 0,
-		.nlinks = 0,
-		.blocks = 0,
-	};
-	i1 = i2 = i3 = i;
+	clear_inode(&i3);
+
+	i1 = i2 = i3;
 	create_inode(fd, &fs, &i1, &n1);
 	create_inode(fd, &fs, &i2, &n2);
 	create_inode(fd, &fs, &i3, &n3);

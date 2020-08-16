@@ -5,6 +5,7 @@
 
 #include "myfs.h"
 #include "util.h"
+#include "helpers.h"
 #include "inode_map.h"
 #include "asserts.h"
 
@@ -73,31 +74,47 @@ static int myfs_getattr(const char *path, struct stat *stbuf,
 			 struct fuse_file_info *fi)
 {
 	memset(stbuf, 0, sizeof(struct stat));
-	if (!strcmp(path, "/")) {
-		stbuf->st_mode = S_IFDIR | 0755;
-		stbuf->st_nlink = 2;
-		return 0;
-	}
 
 	uint32_t inode_num;
 	struct inode_t in;
 	struct inode_t *inode = &in;
 
-	if (fi && fi->fh)
+	if (!strcmp(path, "/")) {
+		inode_num = 0;
+		read_inode(fd, &fs, 0, inode);
+	} else if (fi && fi->fh) {
 		inode_map_get(&inode_map, fi->fh, &inode_num, &inode);
-	else if (!get_path_inode(fd, &fs, path, &inode_num, &in, NULL, NULL, NULL))
+	} else if (!get_path_inode(fd, &fs, path, &inode_num, &in, NULL, NULL, NULL)) {
 		return -ENOENT;
+	}
+
+	uint16_t bs = fs.main_block.block_size;
+	uint32_t bcnt = CEIL_DIV(inode->size, bs);
+	const struct indirect_block_count_t indirect_bcnt =
+		calc_indirect_block_count(bs, bcnt);
+	uint64_t total_blocks = indirect_bcnt.total_indirect + bcnt;
+	total_blocks *= bs / 512;
+
+	struct timespec mtime = { .tv_sec = inode->mtime, .tv_nsec = 0 };
+	struct timespec ctime = { .tv_sec = inode->ctime, .tv_nsec = 0 };
 
 	mode_t mode = (inode->mode & mode_mask);
 	if ((inode->mode & mode_ftype_mask) == mode_ftype_dir)
 		mode |= S_IFDIR;
 	else //if (inode->mode & mode_ftype_mask == mode_ftype_file)
 		mode |= S_IFREG;
+	stbuf->st_ino = inode_num;
 	stbuf->st_mode = mode;
-	stbuf->st_nlink = 1; // TODO
-	stbuf->st_size = inode->size;
+	stbuf->st_nlink = inode->nlinks;
 	stbuf->st_uid = inode->uid;
 	stbuf->st_gid = inode->gid;
+	stbuf->st_size = inode->size;
+	stbuf->st_blksize = bs;
+	stbuf->st_blocks = total_blocks;
+	stbuf->st_atim = mtime;
+	stbuf->st_mtim = mtime;
+	stbuf->st_ctim = ctime;
+
 	return 0;
 }
 
@@ -286,16 +303,9 @@ static int myfs_mknod(const char *path, mode_t mode, dev_t dev)
 		read_inode(fd, &fs, 0, &parent_inode);
 	}
 
-	struct inode_t inode = {
-		.ctime = 0,
-		.mtime = 0,
-		.size = 0,
-		.blocks = 0,
-		.uid = context->uid,
-		.gid = context->gid,
-		.mode = (mode & 0777) | mode_ftype_file,
-	};
+	struct inode_t inode;
 	uint32_t inode_num;
+	initialize_inode(&inode, context->uid, context->gid, (mode & 0777) | mode_ftype_file);
 	create_inode(fd, &fs, &inode, &inode_num);
 	add_inode_to_dir(fd, &fs, parent_inode_num, &parent_inode, inode_num, &inode, filename);
 	return 0;
@@ -328,17 +338,9 @@ static int myfs_mkdir(const char *path, mode_t mode)
 		read_inode(fd, &fs, 0, &parent_inode);
 	}
 
-	struct inode_t inode = {
-		.ctime = 0,
-		.mtime = 0,
-		.size = 0,
-		.uid = context->uid,
-		.gid = context->gid,
-		.mode = (mode & 0777) | mode_ftype_dir,
-		.nlinks = 0,
-		.blocks = 0,
-	};
+	struct inode_t inode;
 	uint32_t inode_num;
+	initialize_inode(&inode, context->uid, context->gid, (mode & 0777) | mode_ftype_dir);
 	create_inode(fd, &fs, &inode, &inode_num);
 	add_inode_to_dir(fd, &fs, parent_inode_num, &parent_inode, inode_num, &inode, filename);
 
@@ -444,6 +446,27 @@ static int myfs_rename(const char *src, const char *dest, unsigned int flags)
 	return 0;
 }
 
+static int myfs_utimens(const char *path, const struct timespec tv[2], struct fuse_file_info *fi)
+{
+	uint32_t inode_num;
+	struct inode_t in;
+	struct inode_t *inode = &in;
+	if (fi && fi->fh)
+		inode_map_get(&inode_map, fi->fh, &inode_num, &inode);
+	else if (!get_path_inode(fd, &fs, path, &inode_num, &in, NULL, NULL, NULL))
+		return -ENOENT;
+
+	if (tv[1].tv_nsec == UTIME_NOW) {
+		inode->mtime = time(NULL);
+		write_inode(fd, &fs, inode_num, inode);
+	} else if (tv[1].tv_nsec != UTIME_OMIT) {
+		inode->mtime = tv[1].tv_sec;
+		write_inode(fd, &fs, inode_num, inode);
+	}
+
+	return 0;
+}
+
 static const struct fuse_operations myfs_oper = {
 	.init       = myfs_init,
 	.destroy    = myfs_destroy,
@@ -461,6 +484,7 @@ static const struct fuse_operations myfs_oper = {
 	.unlink     = myfs_unlink,
 	.rmdir      = myfs_rmdir,
 	.rename     = myfs_rename,
+	.utimens    = myfs_utimens,
 };
 
 int main(int argc, char *argv[])

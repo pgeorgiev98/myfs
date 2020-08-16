@@ -82,7 +82,8 @@ struct inode_t
 
 void initialize_fsinfo(struct fsinfo_t *fs, uint64_t size);
 void initialize_fsinfo_from_main_block(struct fsinfo_t *fs, const struct main_block_t *mb);
-void initialize_inode(struct inode_t *inode);
+void initialize_inode(struct inode_t *inode, uint32_t uid, uint32_t gid, uint16_t mode);
+void clear_inode(struct inode_t *inode);
 
 void write_main_block(int fd, const struct fsinfo_t *fs);
 void write_inode(int fd, const struct fsinfo_t *fs, uint32_t inode_num, const struct inode_t *inode);

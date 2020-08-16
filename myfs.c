@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <time.h>
 
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
@@ -60,7 +61,25 @@ void initialize_fsinfo_from_main_block(struct fsinfo_t *fs, const struct main_bl
 	fs->blocks_pos = blocks_pos;
 }
 
-void initialize_inode(struct inode_t *inode)
+void initialize_inode(struct inode_t *inode, uint32_t uid, uint32_t gid, uint16_t mode)
+{
+	const time_t tm = time(NULL);
+
+	struct inode_t i = {
+		.ctime = tm,
+		.mtime = tm,
+		.size = 0,
+		.uid = uid,
+		.gid = gid,
+		.mode = mode,
+		.nlinks = 0,
+		.blocks = 0,
+	};
+
+	*inode = i;
+}
+
+void clear_inode(struct inode_t *inode)
 {
 	struct inode_t i = {
 		.ctime = 0,
@@ -687,8 +706,7 @@ int remove_inode_from_dir(int fd, struct fsinfo_t *fs, struct inode_t *dir_inode
 void write_root_directory(int fd, struct fsinfo_t *fs)
 {
 	struct inode_t root_inode;
-	initialize_inode(&root_inode);
-	// TODO: Set file mode
+	initialize_inode(&root_inode, 0, 0, 0755 | mode_ftype_dir);
 	set_inode_state(fd, fs, 0, 1);
 	write_inode(fd, fs, 0, &root_inode);
 }
