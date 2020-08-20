@@ -51,7 +51,7 @@ void initialize_fsinfo_from_main_block(struct fsinfo_t *fs, const struct main_bl
 	const uint64_t inode_bitmap_pos = MAIN_BLOCK_SIZE;
 	const uint64_t data_blocks_bitmap_pos = inode_bitmap_pos + inode_bitmap_blocks * (uint64_t)bs;
 	const uint64_t inodes_pos = data_blocks_bitmap_pos + data_bitmap_blocks * (uint64_t)bs;
-	const uint64_t blocks_pos = inodes_pos + mb->inode_count_limit * (uint64_t)bs;
+	const uint64_t blocks_pos = inodes_pos + mb->inode_count_limit * (uint64_t)INODE_SIZE;
 
 	fs->main_block = *mb;
 	fs->inode_bitmap_blocks = inode_bitmap_blocks;
@@ -175,17 +175,20 @@ void read_inode(int fd, const struct fsinfo_t *fs, uint32_t inode_num, struct in
 
 void write_blank_data_bitmap(int fd, const struct fsinfo_t *fs)
 {
-	const uint32_t inode_count = fs->main_block.inode_count_limit;
 	const uint16_t block_size = fs->main_block.block_size;
-	const uint32_t block_count = fs->main_block.block_count;
-	const uint32_t inode_bitmap_blocks = inode_count / block_size
-		+ (inode_count % block_size != 0);
 	uint8_t buffer[block_size];
 	memset(buffer, 0x00, block_size);
-	// TODO: error checking
-	lseek(fd, MAIN_BLOCK_SIZE + inode_bitmap_blocks * block_size, SEEK_SET);
-	for (uint32_t i = 1 + inode_bitmap_blocks; i < block_count; ++i)
-		write(fd, buffer, block_size);
+
+	const uint64_t begin_pos = fs->data_blocks_bitmap_pos;
+	const uint64_t end_pos = fs->inodes_pos;
+	uint64_t pos = begin_pos;
+	lseek(fd, pos, SEEK_SET);
+	while (pos < end_pos) {
+		uint64_t towrite = MIN(block_size, end_pos - pos);
+		uint64_t written = write(fd, buffer, towrite);
+		EXPECT(written > 0); // TODO: error checking
+		pos += written;
+	}
 }
 
 void write_blank_inode_bitmap(int fd, const struct fsinfo_t *fs)
