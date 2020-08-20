@@ -273,6 +273,7 @@ static int myfs_write(const char *path, const char *buf, size_t size, off_t offs
 
 	uint64_t bytes_written = inode_data_write(fd, &fs, inode, (uint8_t *)buf, size, offset);
 	write_inode(fd, &fs, inode_num, inode);
+	write_main_block(fd, &fs);
 	return bytes_written;
 }
 
@@ -308,6 +309,7 @@ static int myfs_mknod(const char *path, mode_t mode, dev_t dev)
 	initialize_inode(&inode, context->uid, context->gid, (mode & 0777) | mode_ftype_file);
 	create_inode(fd, &fs, &inode, &inode_num);
 	add_inode_to_dir(fd, &fs, parent_inode_num, &parent_inode, inode_num, &inode, filename);
+	write_main_block(fd, &fs);
 	return 0;
 }
 
@@ -343,6 +345,7 @@ static int myfs_mkdir(const char *path, mode_t mode)
 	initialize_inode(&inode, context->uid, context->gid, (mode & 0777) | mode_ftype_dir);
 	create_inode(fd, &fs, &inode, &inode_num);
 	add_inode_to_dir(fd, &fs, parent_inode_num, &parent_inode, inode_num, &inode, filename);
+	write_main_block(fd, &fs);
 
 	return 0;
 }
@@ -362,6 +365,7 @@ static int myfs_truncate(const char *path, off_t size, struct fuse_file_info *fi
 
 	resize_file(fd, &fs, inode, size);
 	write_inode(fd, &fs, inode_num, inode);
+	write_main_block(fd, &fs);
 
 	return 0;
 }
@@ -378,6 +382,7 @@ static int myfs_unlink(const char *path)
 
 	remove_inode_from_dir(fd, &fs, &dir_inode, inode_num, &inode);
 	write_inode(fd, &fs, dir_inode_num, &dir_inode);
+	write_main_block(fd, &fs);
 
 	return 0;
 }
@@ -394,6 +399,7 @@ static int myfs_rmdir(const char *path)
 
 	remove_inode_from_dir(fd, &fs, &dir_inode, inode_num, &inode);
 	write_inode(fd, &fs, dir_inode_num, &dir_inode);
+	write_main_block(fd, &fs);
 
 	return 0;
 }
@@ -442,6 +448,7 @@ static int myfs_rename(const char *src, const char *dest, unsigned int flags)
 			return -ENOENT;
 		write_inode(fd, &fs, src_dir_inode_num, &src_dir_inode);
 	}
+	write_main_block(fd, &fs);
 
 	return 0;
 }
