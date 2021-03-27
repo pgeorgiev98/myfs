@@ -26,15 +26,17 @@ int main(int argc, char **argv)
 			"Max number of inodes:      %u\n"
 			"Number of inodes:          %u\n"
 			"Total number of blocks:    %u\n"
+			"Number of data blocks:     %u\n"
 			"Number of free blocks:     %u\n"
-			"Number of reserved blocks: %u\n"
 			"Block size:                %hu\n"
+			"Used space:                %.2f%%\n"
 			, fs.main_block.inode_count_limit
 			, fs.main_block.inode_count
 			, fs.main_block.block_count
 			, fs.main_block.data_block_count
 			, fs.main_block.free_data_block_count
 			, fs.main_block.block_size
+			, 100.0 * ((double)fs.main_block.data_block_count - (double)fs.main_block.free_data_block_count) / (double)fs.main_block.data_block_count
 		  );
 
 	return 0;
